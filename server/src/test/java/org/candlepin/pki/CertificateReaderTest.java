@@ -33,7 +33,8 @@ public class CertificateReaderTest {
     public void readkey() throws Exception {
         String caCert = getClass().getClassLoader().getResource("certs/test.crt").toURI().getPath();
         String caCertUpstream = getClass().getClassLoader().getResource("certs/upstream").toURI().getPath();
-        String caKey = getClass().getClassLoader().getResource("keys/pkcs1-des-encrypted.pem").toURI().getPath();
+        String caKey =
+            getClass().getClassLoader().getResource("keys/pkcs1-des-encrypted.pem").toURI().getPath();
         Configuration config = new MapConfiguration(
             new HashMap<String, String>() {
                 {
