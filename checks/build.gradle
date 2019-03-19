@@ -1,3 +1,5 @@
+// vim: set expandtab sts=4 sw=4 ai:
+
 description 'Candlepin Checkstyle plugin'
 
 dependencies {

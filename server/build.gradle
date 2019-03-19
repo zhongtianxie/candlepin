@@ -1,3 +1,5 @@
+// vim: set expandtab sts=4 sw=4 ai:
+
 import groovy.text.GStringTemplateEngine
 
 apply plugin: 'war'
