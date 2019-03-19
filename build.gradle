@@ -133,24 +133,6 @@ allprojects {
         oauth "net.oauth.core:oauth-provider:20100527" exclude module: "*"
 
         collections "com.google.guava:guava:25.1-jre" exclude module: "*"
-
-/*
-
-
-VALIDATOR = ['org.hibernate.validator:hibernate-validator:jar:6.0.7.Final',
-             'org.hibernate.validator:hibernate-validator-annotation-processor:jar:6.0.7.Final',
-             'javax.validation:validation-api:jar:2.0.1.Final']
-
-SERVLET = 'javax.servlet:servlet-api:jar:2.5'
-
-
-SCHEMASPY = 'net.sourceforge:schemaSpy:jar:4.1.1'
-
-
-
-SCANNOTATION = 'org.scannotation:scannotation:jar:1.0.3'
-     */
-
     }
 }
 
@@ -214,7 +196,6 @@ configure(subprojects.findAll {it.name == "candlepin-common" || it.name == "cand
         hostedtest = "true".equals(project.findProperty("hostedtest"))
     }
 
-
     checkstyle {
         configFile = file("${rootProject.rootDir}/project_conf/checks.xml")
         configProperties = [
@@ -234,7 +215,7 @@ configure(subprojects.findAll {it.name == "candlepin-common" || it.name == "cand
 }
 
 project(":checks") {
-    description "Candlepin Checkstyle plugin"
+    description "Candlepin custom Checkstyle checks"
 
     dependencies {
         compile "com.puppycrawl.tools:checkstyle:$checkstyle_version" exclude module: "*"
