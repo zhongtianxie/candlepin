@@ -154,6 +154,22 @@ subprojects {
         // For LogDriver
         ivy { url "http://awood.fedorapeople.org/ivy/candlepin/" }
     }
+
+    task writeNewPom {
+        doLast {
+            pom {
+                project {
+                    parent {
+                        groupId "org.candlepin"
+                        artifactId "candlepin-parent"
+                        version "2.0"
+                        // TODO determine this dynamically
+                        relativePath ".."
+                    }
+                }
+            }.writeTo("$buildDir/newpom.xml")
+        }
+    }
 }
 
 // Add checkstyle to just the common & server projects
