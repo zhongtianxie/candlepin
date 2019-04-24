@@ -14,8 +14,14 @@
  */
 package org.candlepin.model;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import org.candlepin.common.config.Configuration;
 import org.candlepin.common.exceptions.NotFoundException;
@@ -30,6 +36,7 @@ import org.candlepin.util.FactValidator;
 import org.candlepin.util.PropertyValidationException;
 import org.candlepin.util.Util;
 
+import org.hibernate.Session;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -38,11 +45,14 @@ import org.mockito.Mockito;
 
 import java.lang.reflect.Field;
 import java.math.BigInteger;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.GregorianCalendar;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -54,7 +64,6 @@ import javax.inject.Inject;
 import javax.persistence.EntityManager;
 
 
-
 /**
  * ConsumerCuratorTest JUnit tests for Consumer database code
  */
@@ -64,9 +73,12 @@ public class ConsumerCuratorTest extends DatabaseTestFixture {
     @Rule
     public ExpectedException ex = ExpectedException.none();
 
-    @Inject private Configuration config;
-    @Inject private DeletedConsumerCurator dcc;
-    @Inject private EntityManager em;
+    @Inject
+    private Configuration config;
+    @Inject
+    private DeletedConsumerCurator dcc;
+    @Inject
+    private EntityManager em;
 
     private Owner owner;
     private ConsumerType ct;
@@ -908,6 +920,27 @@ public class ConsumerCuratorTest extends DatabaseTestFixture {
 
         assertEquals(consumer.getLastCheckin().getTime(), dt.getTime());
     }
+
+    @Test
+    public void shouldUpdateLastCheckInOfGivenReporter() {
+        final Date expectedCheckin = new Date();
+        final String reporterId = "reporter";
+        createConsumer(1, reporterId);
+        createConsumer(2, reporterId);
+        createConsumer(3, reporterId + 3);
+        consumerCurator.flush();
+
+        consumerCurator.heartbeatUpdate(reporterId, expectedCheckin);
+        consumerCurator.flush();
+
+        final List<Timestamp> expected = this.getAllCheckIns();
+        assertEquals(2, expected.stream()
+            .map(Timestamp::getTime)
+            .map(Date::new)
+            .filter(expectedCheckin::equals)
+            .count());
+    }
+
     @Test
     public void updatelastCheckin() throws Exception {
         Date date = new Date();
@@ -1358,6 +1391,7 @@ public class ConsumerCuratorTest extends DatabaseTestFixture {
         assertEquals(consumer1, hypervisorMap.get(hypervisorId1));
         assertEquals(consumer2, hypervisorMap.get(hypervisorId2));
     }
+
     @Test
     public void testGetHypervisorsBulk() {
         String hypervisorid = "hypervisor";
@@ -1866,6 +1900,28 @@ public class ConsumerCuratorTest extends DatabaseTestFixture {
                 subscriptionIds, contracts);
             assertEquals(expectedCount, count);
         }
+    }
+
+    private void createConsumer(final int id, final String reporterId) {
+        final Date lastCheckin = new GregorianCalendar(2000, Calendar.NOVEMBER, 20, 8, 55).getTime();
+
+        final String hypervisor = "hypervisor" + id;
+        final HypervisorId hypervisorId = new HypervisorId(hypervisor);
+        hypervisorId.setOwner(owner);
+        hypervisorId.setReporterId(reporterId);
+
+        final Consumer consumer = new Consumer("consumer" + id, "user " + id, owner, ct);
+        consumer.setHypervisorId(hypervisorId);
+        consumer.setLastCheckin(lastCheckin);
+        consumerCurator.create(consumer);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Timestamp> getAllCheckIns() {
+        final String hql = "SELECT lastcheckin FROM cp_consumer";
+        return ((Session) this.em.getDelegate())
+            .createSQLQuery(hql)
+            .getResultList();
     }
 
 }

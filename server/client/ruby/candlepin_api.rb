@@ -76,8 +76,8 @@ class Candlepin
   # TODO: need to switch to a params hash, getting to be too many arguments.
   def register(name, type=:system, uuid=nil, facts={}, username=nil,
               owner_key=nil, activation_keys=[], installedProducts=[],
-              environment=nil, capabilities=[], hypervisor_id=nil,
-              content_tags=[], created_date=nil, last_checkin_date=nil,
+              environment=nil, capabilities=[], hypervisor_id=nil, reporter_id=nil, last_checkin_date=nil,
+              content_tags=[], created_date=nil,
               annotations=nil, recipient_owner_key=nil, user_agent=nil,
               entitlement_count=0, id_cert=nil, serviceLevel=nil, role=nil, usage=nil,
               addOns=[])
@@ -93,7 +93,7 @@ class Candlepin
 
     consumer[:capabilities] = capabilities.collect { |name| {'name' => name} } if capabilities
     consumer[:uuid] = uuid if not uuid.nil?
-    consumer[:hypervisorId] = {:hypervisorId => hypervisor_id} if hypervisor_id
+    consumer[:hypervisorId] = {:hypervisorId => hypervisor_id, :reporterId => reporter_id} if hypervisor_id
     consumer[:created] = created_date if created_date
     consumer[:lastCheckin] = last_checkin_date if last_checkin_date
     consumer[:annotations] = annotations if annotations
@@ -127,7 +127,7 @@ class Candlepin
   def hypervisor_check_in(owner, host_guest_mapping={}, create_missing=nil)
     path = get_path("hypervisors")
     params = {
-      :owner => owner
+        :owner => owner
     }
 
     params[:create_missing] = create_missing unless create_missing.nil?
@@ -143,6 +143,14 @@ class Candlepin
     params[:reporter_id] = reporter_id unless reporter_id.nil?
 
     return post_text(path, params, json_data, 'json')
+  end
+
+  def hypervisor_heartbeat_update(owner, reporter_id=nil)
+    path = get_path("hypervisors") + "/heartbeat/#{owner}"
+    params = {}
+    params[:reporter_id] = reporter_id unless reporter_id.nil?
+
+    return post_empty(path, params, accept='application/json')
   end
 
   def hypervisor_update_file(owner, json_file, create_missing=nil, reporter_id=nil)
@@ -1553,6 +1561,21 @@ class Candlepin
     # execute
     puts ("POST #{euri} #{data} #{accept}") if @verbose
     response = get_client(euri, Net::HTTP::Post, :post)[euri].post(data, :content_type => 'text/plain', :accept => accept)
+
+    return response.body
+  end
+
+  def post_empty(uri, params={}, data=nil, accept='application/json')
+    # escape and build uri
+    euri = URI.escape(uri)
+    if !params.empty?
+      euri << '?'
+      euri << URI.encode_www_form(params)
+    end
+
+    # execute
+    puts ("POST #{euri} #{data} #{accept}") if @verbose
+    response = get_client(euri, Net::HTTP::Post, :post)[euri].post(data, :accept => accept, :content_length => 0)
 
     return response.body
   end

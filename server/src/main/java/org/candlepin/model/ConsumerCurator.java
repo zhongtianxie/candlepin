@@ -560,6 +560,21 @@ public class ConsumerCurator extends AbstractHibernateCurator<Consumer> {
             .executeUpdate();
     }
 
+    @Transactional
+    public void heartbeatUpdate(final String reporterId, final Date checkIn) {
+        final String hql = "" +
+            "UPDATE cp_consumer" +
+            " SET lastcheckin = :checkin" +
+            " WHERE id IN (SELECT consumer_id" +
+            " FROM cp_consumer_hypervisor" +
+            " WHERE reporter_id = :reporter)";
+
+        this.currentSession().createSQLQuery(hql)
+            .setParameter("checkin", checkIn)
+            .setParameter("reporter", reporterId)
+            .executeUpdate();
+    }
+
     private boolean factsChanged(Map<String, String> updatedFacts, Map<String, String> existingFacts) {
         return !existingFacts.equals(updatedFacts);
     }

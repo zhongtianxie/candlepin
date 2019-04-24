@@ -37,6 +37,7 @@ import org.candlepin.model.Owner;
 import org.candlepin.model.OwnerCurator;
 import org.candlepin.model.VirtConsumerMap;
 import org.candlepin.pinsetter.tasks.HypervisorUpdateJob;
+import org.candlepin.pinsetter.tasks.HypervisorHeartbeatUpdateJob;
 import org.candlepin.resource.util.GuestMigration;
 
 import com.google.inject.Inject;
@@ -295,6 +296,21 @@ public class HypervisorResource {
         Owner owner = this.getOwner(ownerKey);
 
         return HypervisorUpdateJob.forOwner(owner, hypervisorJson, createMissing, principal, reporterId);
+    }
+
+    @ApiOperation(notes = "Updates last check in date of all consumers of the given reporterId.",
+        value = "hypervisorHeartbeatUpdate")
+    @ApiResponses({ @ApiResponse(code = 202, message = "") })
+    @POST
+    @Produces(MediaType.APPLICATION_JSON)
+    @Transactional
+    @Path("/heartbeat/{owner}")
+    public JobDetail hypervisorHeartbeatUpdate(
+        @PathParam("owner")
+        @Verify(value = Owner.class, require = Access.READ_ONLY, subResource = SubResource.HYPERVISOR)
+        final String ownerKey,
+        @QueryParam("reporter_id") final String reporterId) {
+        return HypervisorHeartbeatUpdateJob.from(reporterId);
     }
 
     /*
