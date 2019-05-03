@@ -26,6 +26,7 @@ import org.candlepin.util.Util;
 import com.google.common.base.Charsets;
 
 import org.apache.commons.codec.binary.Base64OutputStream;
+import org.apache.commons.codec.binary.Hex;
 import org.mozilla.jss.asn1.ASN1Util;
 import org.mozilla.jss.asn1.ASN1Value;
 import org.mozilla.jss.asn1.INTEGER;
@@ -69,12 +70,16 @@ import org.mozilla.jss.netscape.security.x509.X509CRLImpl;
 import org.mozilla.jss.netscape.security.x509.X509CertImpl;
 import org.mozilla.jss.netscape.security.x509.X509CertInfo;
 import org.mozilla.jss.netscape.security.x509.X509Key;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.math.BigInteger;
+import java.nio.charset.Charset;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -102,6 +107,8 @@ import javax.inject.Inject;
  * PKI utility that uses the JSS crypto provider
  */
 public class JSSPKIUtility extends ProviderBasedPKIUtility {
+    private static final Logger log = LoggerFactory.getLogger(JSSPKIUtility.class);
+
     public static final byte[] LINE_SEPARATOR = String.format("%n").getBytes();
     public static final String SIGNING_ALG_ID = "SHA256withRSA";
 
@@ -126,6 +133,11 @@ public class JSSPKIUtility extends ProviderBasedPKIUtility {
         try {
             X509Certificate caCert = reader.getCACert();
             byte[] publicKeyEncoded = clientKeyPair.getPublic().getEncoded();
+
+            log.info("Public key in hex is {}", Hex.encodeHexString(publicKeyEncoded));
+            ByteArrayOutputStream bos = new ByteArrayOutputStream();
+            this.writePemEncoded(publicKeyEncoded, bos, "PUBLIC KEY");
+            log.info("Public key in pem is \n{}", new String(bos.toByteArray(), Charset.defaultCharset()));
 
             certInfo.set(X509CertInfo.ISSUER,
                 new CertificateIssuerName(new X500Name(caCert.getSubjectX500Principal().getEncoded())));
