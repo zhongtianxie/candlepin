@@ -308,7 +308,8 @@ public class HypervisorResource {
             .setData(hypervisorJson)
             .setCreateMissing(createMissing)
             .setPrincipal(principal)
-            .setReporter(reporterId);
+            .setReporter(reporterId)
+            .setCreatedDate();
 
         AsyncJobStatus status = jobManager.queueJob(config);
         return translator.translate(status, AsyncJobStatusDTO.class);

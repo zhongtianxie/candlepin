@@ -50,6 +50,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
@@ -80,6 +81,7 @@ public class HypervisorUpdateJob implements AsyncJob {
     private static final String REPORTER_ID = "reporter_id";
     private static final String DATA = "data";
     private static final String PRINCIPAL = "principal";
+    static String JOB_CREATED_DATE= "job_created_date";
     private static final int BULK_SIZE = 10;
 
     @Inject
@@ -119,6 +121,7 @@ public class HypervisorUpdateJob implements AsyncJob {
             Boolean create = arguments.getAsBoolean(CREATE);
             String principal = arguments.getAsString(PRINCIPAL);
             String jobReporterId = arguments.getAsString(REPORTER_ID);
+            Date jobCreatedDate = new Date(arguments.getAsLong(JOB_CREATED_DATE));
 
             final Owner owner = ownerCurator.getByKey(ownerKey);
             if (owner == null) {
@@ -145,6 +148,7 @@ public class HypervisorUpdateJob implements AsyncJob {
             final List<Consumer> created = new ArrayList<>();
             final List<Consumer> updated = new ArrayList<>();
             for (Consumer consumer : hypervisorKnownConsumersMap.getConsumers()) {
+                consumer.setDateOverride(jobCreatedDate);
                 final HypervisorConsumerDTO translated = this.translator.translate(
                     consumer, HypervisorConsumerDTO.class);
                 if (result.wasCreated(translated)) {
@@ -217,8 +221,7 @@ public class HypervisorUpdateJob implements AsyncJob {
 
         public HypervisorUpdateJobConfig() {
             this.setJobKey(JOB_KEY)
-                .setJobName(JOB_NAME)
-                .addConstraint(JobConstraints.uniqueByArguments(OWNER_KEY));
+                .setJobName(JOB_NAME);
         }
 
         /**
@@ -269,6 +272,12 @@ public class HypervisorUpdateJob implements AsyncJob {
             }
 
             this.setJobArgument(PRINCIPAL, principal.getUsername());
+
+            return this;
+        }
+
+        public HypervisorUpdateJobConfig setCreatedDate() {
+            this.setJobArgument(JOB_CREATED_DATE, (new Date()));
 
             return this;
         }

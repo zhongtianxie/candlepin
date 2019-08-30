@@ -28,6 +28,7 @@ import java.util.Date;
 import javax.persistence.MappedSuperclass;
 import javax.persistence.PrePersist;
 import javax.persistence.PreUpdate;
+import javax.persistence.Transient;
 import javax.xml.bind.annotation.XmlType;
 
 
@@ -52,11 +53,15 @@ public abstract class AbstractHibernateObject<T extends AbstractHibernateObject>
     private Date created;
     @ApiModelProperty(readOnly = true)
     private Date updated;
+    @Transient
+    private Date dateOverride;
 
     @PrePersist
     protected void onCreate() {
         Date now = new Date();
-
+        if (dateOverride != null) {
+            now = dateOverride;
+        }
         if (this.created == null) {
             setCreated(now);
         }
@@ -67,6 +72,12 @@ public abstract class AbstractHibernateObject<T extends AbstractHibernateObject>
     @PreUpdate
     protected void onUpdate() {
         setUpdated(new Date());
+        if (dateOverride == null) {
+            setUpdated(new Date());
+        }
+        else {
+            setUpdated(dateOverride);
+        }
     }
 
     @JsonInclude(Include.NON_NULL)
@@ -85,6 +96,14 @@ public abstract class AbstractHibernateObject<T extends AbstractHibernateObject>
 
     public void setUpdated(Date updated) {
         this.updated = updated;
+    }
+
+    public void setDateOverride(Date dateOverride) {
+        this.dateOverride = dateOverride;
+    }
+
+    public Date getDateOverride() {
+        return this.dateOverride;
     }
 
     /**
