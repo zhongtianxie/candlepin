@@ -74,7 +74,7 @@ import org.candlepin.pki.impl.JSSPKIUtility;
 import org.candlepin.policy.criteria.CriteriaRules;
 import org.candlepin.policy.js.JsRunner;
 import org.candlepin.policy.js.JsRunnerProvider;
-import org.candlepin.policy.js.entitlement.Enforcer;
+import org.candlepin.policy.entitlement.Enforcer;
 import org.candlepin.policy.js.pool.PoolRules;
 import org.candlepin.resource.ActivationKeyResource;
 import org.candlepin.resource.ConsumerResource;

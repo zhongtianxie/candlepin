@@ -33,7 +33,7 @@ import org.candlepin.pinsetter.core.model.JobStatus;
 import org.candlepin.policy.EntitlementRefusedException;
 import org.candlepin.policy.ValidationError;
 import org.candlepin.policy.ValidationResult;
-import org.candlepin.policy.js.entitlement.EntitlementRulesTranslator;
+import org.candlepin.policy.entitlement.EntitlementRulesTranslator;
 import org.candlepin.util.Util;
 
 import com.google.inject.Inject;
