@@ -157,7 +157,7 @@ public class PostEntitlementRulesTest extends EntitlementRulesTestFixture {
         verify(poolManagerMock, never()).createPools(any(List.class));
         verify(poolManagerMock, never()).setPoolQuantity(any(Pool.class), anyInt());
 
-        enforcer.postUnbind(consumer, poolManagerMock, e);
+        enforcer.postUnbind(poolManagerMock, e);
         verify(poolManagerMock, never()).setPoolQuantity(any(Pool.class), anyInt());
         verify(poolManagerMock, never()).setPoolQuantity(any(Pool.class), anyLong());
     }
@@ -179,7 +179,7 @@ public class PostEntitlementRulesTest extends EntitlementRulesTestFixture {
         verify(poolManagerMock, never()).createPools(any(List.class));
         verify(poolManagerMock, never()).setPoolQuantity(any(Pool.class), anyInt());
 
-        enforcer.postUnbind(consumer, poolManagerMock, e);
+        enforcer.postUnbind(poolManagerMock, e);
         verify(poolManagerMock, never()).setPoolQuantity(any(Pool.class), anyInt());
         verify(poolManagerMock, never()).setPoolQuantity(any(Pool.class), anyLong());
     }

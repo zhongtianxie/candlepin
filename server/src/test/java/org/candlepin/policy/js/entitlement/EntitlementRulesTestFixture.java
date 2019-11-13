@@ -16,12 +16,9 @@ package org.candlepin.policy.js.entitlement;
 
 import static org.mockito.Mockito.*;
 
-import org.candlepin.audit.EventFactory;
-import org.candlepin.audit.EventSink;
 import org.candlepin.common.config.Configuration;
 import org.candlepin.config.ConfigProperties;
 import org.candlepin.controller.PoolManager;
-import org.candlepin.controller.ProductManager;
 import org.candlepin.dto.ModelTranslator;
 import org.candlepin.dto.StandardTranslator;
 import org.candlepin.jackson.ProductCachedSerializationModule;
@@ -47,7 +44,6 @@ import org.candlepin.policy.js.JsRunnerRequestCache;
 import org.candlepin.policy.js.RulesObjectMapper;
 import org.candlepin.policy.js.compliance.ComplianceStatus;
 import org.candlepin.policy.js.pool.PoolRules;
-import org.candlepin.service.ProductServiceAdapter;
 import org.candlepin.test.TestDateUtil;
 import org.candlepin.test.TestUtil;
 import org.candlepin.util.DateSourceImpl;
@@ -71,8 +67,6 @@ public class EntitlementRulesTestFixture {
     @Mock
     protected RulesCurator rulesCurator;
     @Mock
-    protected ProductServiceAdapter prodAdapter;
-    @Mock
     protected Configuration config;
     @Mock
     protected ConsumerCurator consumerCurator;
@@ -94,12 +88,6 @@ public class EntitlementRulesTestFixture {
     private ProductCurator productCurator;
     @Mock
     private OwnerCurator ownerCurator;
-    @Mock
-    protected ProductManager productManager;
-    @Mock
-    protected EventSink eventSink;
-    @Mock
-    protected EventFactory eventFactory;
     @Mock
     protected EnvironmentCurator environmentCurator;
 
@@ -137,11 +125,6 @@ public class EntitlementRulesTestFixture {
             consumerTypeCurator,
             productCurator,
             new RulesObjectMapper(new ProductCachedSerializationModule(productCurator)),
-            ownerCurator,
-            ownerProductCuratorMock,
-            productManager,
-            eventSink,
-            eventFactory,
             translator
         );
 
