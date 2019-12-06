@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2009 - 2012 Red Hat, Inc.
+ * Copyright (c) 2009 - 2019 Red Hat, Inc.
  *
  * This software is licensed to you under the GNU General Public License,
  * version 2 (GPLv2). There is NO WARRANTY for this software, express or
@@ -14,8 +14,9 @@
  */
 package org.candlepin.liquibase;
 
-import liquibase.database.Database;
+import liquibase.database.jvm.JdbcConnection;
 import liquibase.exception.DatabaseException;
+import liquibase.exception.ValidationErrors;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -27,6 +28,7 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 
 
@@ -37,7 +39,7 @@ import java.util.Set;
  * timestamps where necessary. Only products and content referenced by existing pools or
  * subscriptions will be migrated over. Unreferenced objects will be silently discarded.
  */
-public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
+public class PerOrgProductsMigrationTask extends AbstractLiquibaseTask {
 
     /** The maximum number of parameters we can cram into a single statement on all DBs. */
     private static final int MAX_PARAMETERS_PER_STATEMENT = 32000;
@@ -45,11 +47,124 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
     protected Map<String, String> migratedProducts;
     protected Map<String, String> migratedContent;
 
-    public PerOrgProductsMigrationTask(Database database, CustomTaskLogger logger) {
-        super(database, logger);
-
+    public PerOrgProductsMigrationTask() {
         this.migratedProducts = new HashMap<>();
         this.migratedContent = new HashMap<>();
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void init() {
+        // Intentionally left empty
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public ValidationErrors validate(Database database) throws DatabaseException, SQLException {
+        ValidationErrors errors = new ValidationErrors();
+
+        int count = 0;
+
+        // Fetch our org count for prettier log messages
+        try {
+            ResultSet countQuery = database.executeQuery("SELECT count(id) FROM cp_owner");
+            countQuery.next();
+            count = countQuery.getInt(1);
+            countQuery.close();
+        }
+        catch (Exception exception) {
+            // This only happens if the table doesn't exist yet, and no orgs means no migration
+            return null;
+        }
+
+        // Do per-org validation...
+        ResultSet orgids = database.executeQuery("SELECT id, account FROM cp_owner");
+        for (int index = 1; orgids.next(); ++index) {
+            String orgid = orgids.getString(1);
+            String account = orgids.getString(2);
+
+            this.log.info("Validating data for org %s (%s) (%d of %d)", account, orgid, index, count);
+
+            boolean validationResult = this.checkForMalformedObjectRefs(database, orgid, errors);
+            if (!validationResult) {
+                this.log.error("Org %s (%s) failed data validation", account, orgid);
+            }
+        }
+        orgids.close();
+
+        return errors.hasErrors() ? errors : null;
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void execute(Database database) throws DatabaseException, SQLException {
+        JdbcConnection connection = database.getJdbcConnection();
+
+        // Store the connection's auto commit setting, so we may temporarily clobber it.
+        boolean autocommit = connection.getAutoCommit();
+
+        try {
+            connection.setAutoCommit(false);
+
+            // Fetch our org count for prettier log messages
+            ResultSet countQuery = database.executeQuery("SELECT count(id) FROM cp_owner");
+            countQuery.next();
+            int count = countQuery.getInt(1);
+            countQuery.close();
+
+            // Perform the actual per-org migration
+            ResultSet orgids = database.executeQuery("SELECT id, account FROM cp_owner");
+            for (int index = 1; orgids.next(); ++index) {
+                String orgid = orgids.getString(1);
+                String account = orgids.getString(2);
+
+                int brokenKeys = this.fixBrokenActivationKeys(database, orgid);
+                if (brokenKeys > 0) {
+                    this.log.info("Fixed %s activation keys referencing missing products", brokenKeys);
+                }
+
+                this.log.info("Migrating data for org %s (%s) (%d of %d)", account, orgid, index, count);
+
+                this.migrateProductData(database, orgid);
+                this.migrateContentData(database, orgid);
+            }
+
+            this.migrateRelatedData(database);
+
+            orgids.close();
+            connection.commit();
+        }
+        finally {
+            // Restore original autocommit state
+            connection.setAutoCommit(autocommit);
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String getConfirmationMessage() {
+        return "Product data migrated successfully";
+    }
+
+    /**
+     * Generates a 32-character UUID to use with object creation/migration.
+     * <p></p>
+     * The UUID is generated by creating a "standard" UUID and removing the hyphens. The UUID may be
+     * standardized by reinserting the hyphens later, if necessary.
+     *
+     * @return
+     *  a 32-character UUID
+     */
+    private String generateUUID() {
+        return UUID.randomUUID().toString().replace("-", "");
     }
 
     /**
@@ -67,116 +182,64 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
      * @return
      *  a PreparedStatement instance representing the bulk insert operation
      */
-    protected PreparedStatement generateBulkInsertStatement(String table, int rows, String... cols)
+    private PreparedStatement generateBulkInsertStatement(Database database, String table, int rows,
+        String... cols)
         throws DatabaseException, SQLException {
 
         if (rows > 0) {
             StringBuilder builder, rowbuilder;
 
-            rowbuilder = new StringBuilder(2 + cols.length * 2);
+            if (!database.getDatabaseProductName().matches(".*(?i:oracle).*")) {
+                rowbuilder = new StringBuilder(2 + cols.length * 2);
 
-            rowbuilder.append('(');
-            for (int i = 0; i < cols.length; ++i) {
-                rowbuilder.append("?,");
+                rowbuilder.append('(');
+                for (int i = 0; i < cols.length; ++i) {
+                    rowbuilder.append("?,");
+                }
+                rowbuilder.deleteCharAt(rowbuilder.length() - 1).append(')');
+
+                builder = new StringBuilder(15 + 20 * cols.length + table.length() +
+                    (2 + cols.length * 3) * rows);
+
+                builder.append("INSERT INTO ").append(table).append('(');
+                for (String column : cols) {
+                    builder.append(column).append(',');
+                }
+                builder.deleteCharAt(builder.length() - 1).append(") VALUES");
+
+                for (int i = 0; i < rows; ++i) {
+                    builder.append(rowbuilder).append(',');
+                }
+                builder.deleteCharAt(builder.length() - 1);
             }
-            rowbuilder.deleteCharAt(rowbuilder.length() - 1).append(')');
+            else {
+                rowbuilder = new StringBuilder(20 * cols.length + table.length());
 
-            builder = new StringBuilder(15 + 20 * cols.length + table.length() +
-                (2 + cols.length * 3) * rows);
+                rowbuilder.append("INTO ").append(table).append('(');
+                for (String column : cols) {
+                    rowbuilder.append(column).append(',');
+                }
+                rowbuilder.deleteCharAt(rowbuilder.length() - 1).append(") VALUES(");
+                for (int i = 0; i < cols.length; ++i) {
+                    rowbuilder.append("?,");
+                }
+                rowbuilder.deleteCharAt(rowbuilder.length() - 1).append(") ");
 
-            builder.append("INSERT INTO ").append(table).append('(');
-            for (String column : cols) {
-                builder.append(column).append(',');
+                builder = new StringBuilder(30 + (20 * cols.length + table.length()) * rows);
+                builder.append("INSERT ALL ");
+
+                for (int i = 0; i < rows; ++i) {
+                    builder.append(rowbuilder);
+                }
+
+                builder.append("SELECT 1 FROM DUAL");
             }
-            builder.deleteCharAt(builder.length() - 1).append(") VALUES");
 
-            for (int i = 0; i < rows; ++i) {
-                builder.append(rowbuilder).append(',');
-            }
-            builder.deleteCharAt(builder.length() - 1);
-
-            return this.connection.prepareStatement(builder.toString());
+            return database.prepareStatement(builder.toString());
         }
 
         return null;
     }
-
-    /**
-     * Executes the multi-org upgrade task.
-     *
-     * @throws DatabaseException
-     *  if an error occurs while performing a database operation
-     *
-     * @throws SQLException
-     *  if an error occurs while executing an SQL statement
-     */
-    public void execute() throws DatabaseException, SQLException {
-
-        // Store the connection's auto commit setting, so we may temporarily clobber it.
-        boolean autocommit = this.connection.getAutoCommit();
-
-        try {
-            this.connection.setAutoCommit(false);
-
-            // Fetch our org count for prettier log messages
-            ResultSet countQuery = this.executeQuery("SELECT count(id) FROM cp_owner");
-            countQuery.next();
-            int count = countQuery.getInt(1);
-            countQuery.close();
-
-            // Do our initial validation check to avoid doing a multi-hour migration and fail out
-            // while validating the last org...
-            boolean validated = true;
-            ResultSet orgids = this.executeQuery("SELECT id, account FROM cp_owner");
-            for (int index = 1; orgids.next(); ++index) {
-                String orgid = orgids.getString(1);
-                String account = orgids.getString(2);
-
-                this.logger.info("Validating data for org %s (%s) (%d of %d)", account, orgid, index, count);
-
-                int brokenKeys = fixBrokenActivationKeys(orgid);
-
-                if (brokenKeys > 0) {
-                    logger.info("Fixed %s activation keys referencing missing products", brokenKeys);
-                }
-
-                // Check for malformed objects which may end up in a bad state if we migrate
-                boolean validationResult = this.checkForMalformedObjectRefs(orgid);
-
-                if (!validationResult) {
-                    validated = false;
-                    this.logger.error("Org %s (%s) failed data validation", account, orgid);
-                }
-            }
-            orgids.close();
-
-            if (!validated) {
-                throw new DatabaseException("One or more orgs failed data validation");
-            }
-
-            // Perform the actual per-org migration
-            orgids = this.executeQuery("SELECT id, account FROM cp_owner");
-            for (int index = 1; orgids.next(); ++index) {
-                String orgid = orgids.getString(1);
-                String account = orgids.getString(2);
-
-                this.logger.info("Migrating data for org %s (%s) (%d of %d)", account, orgid, index, count);
-
-                this.migrateProductData(orgid);
-                this.migrateContentData(orgid);
-            }
-
-            this.migrateRelatedData();
-
-            orgids.close();
-            this.connection.commit();
-        }
-        finally {
-            // Restore original autocommit state
-            this.connection.setAutoCommit(autocommit);
-        }
-    }
-
 
     /**
      * Checks for any pools or subscriptions which contain bad data (typically products which do
@@ -189,20 +252,20 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
      *  true if the check completed successfully; false otherwise
      */
     @SuppressWarnings("checkstyle:methodlength")
-    protected boolean checkForMalformedObjectRefs(String orgid) throws DatabaseException,
-        SQLException {
+    private boolean checkForMalformedObjectRefs(Database database, String orgid, ValidationErrors verrors)
+        throws DatabaseException, SQLException {
 
-        ResultSet badObjectRefs = this.executeQuery(
+        ResultSet badObjectRefs = database.executeQuery(
             "SELECT DISTINCT u.product_id, u.pool_id, u.subscription_id " +
-            "FROM (SELECT NULLIF(p.product_id_old, '') AS product_id, p.id AS pool_id, " +
+            "FROM (SELECT NULLIF(p.productid, '') AS product_id, p.id AS pool_id, " +
             "  NULL AS subscription_id " +
             "    FROM cp_pool p " +
             "    WHERE p.owner_id = ? " +
             "  UNION " +
-            "  SELECT p.derived_product_id_old, p.id, NULL " +
+            "  SELECT p.derivedproductid, p.id, NULL " +
             "    FROM cp_pool p " +
             "    WHERE p.owner_id = ? " +
-            "      AND NOT NULLIF(p.derived_product_id_old, '') IS NULL " +
+            "      AND NOT NULLIF(p.derivedproductid, '') IS NULL " +
             "  UNION " +
             "  SELECT NULLIF(pp.product_id, ''), p.id, NULL " +
             "    FROM cp_pool p " +
@@ -247,21 +310,34 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
 
             if (productId != null) {
                 if (poolId != null) {
-                    this.logger.error("  Pool \"%s\" references an unresolvable product: %s",
+                    String msg = String.format("Pool \"%s\" references an unresolvable product: %s",
                         poolId, productId);
+
+                    this.log.error("  " + msg);
+                    verrors.addError(msg);
                 }
                 else if (subscriptionId != null) {
-                    this.logger.error("  Subscription \"%s\" references an unresolvable product: %s",
+                    String msg = String.format("Subscription \"%s\" references an unresolvable product: %s",
                         subscriptionId, productId);
+
+                    this.log.error("  " + msg);
+                    verrors.addError(msg);
                 }
             }
             else {
                 if (poolId != null) {
-                    this.logger.error("  Pool \"%s\" contains a null or empty product reference", poolId);
+                    String msg = String.format("Pool \"%s\" contains a null or empty product reference",
+                        poolId);
+
+                    this.log.error("  " + msg);
+                    verrors.addError(msg);
                 }
                 else if (subscriptionId != null) {
-                    this.logger.error("  Subscription \"%s\" contains a null or empty product reference",
-                        subscriptionId);
+                    String msg = String.format(
+                        "Subscription \"%s\" contains a null or empty product reference", subscriptionId);
+
+                    this.log.error("  " + msg);
+                    verrors.addError(msg);
                 }
             }
         }
@@ -269,7 +345,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
         badObjectRefs.close();
 
         // Check for bad content refs on our environments
-        badObjectRefs = this.executeQuery(
+        badObjectRefs = database.executeQuery(
             "  SELECT e.id, ec.contentid " +
             "    FROM cp_environment e " +
             "    JOIN cp_env_content ec ON e.id = ec.environment_id " +
@@ -285,43 +361,31 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             String envId = badObjectRefs.getString(1);
             String contentId = badObjectRefs.getString(2);
 
-            this.logger.error("  Environment \"%s\" references unresolvable content: %s", envId, contentId);
+            String msg = String.format("Environment \"%s\" references unresolvable content: %s",
+                envId, contentId);
+
+            this.log.error("  " + msg);
+            verrors.addError(msg);
         }
 
         badObjectRefs.close();
 
-        badObjectRefs = this.executeQuery(
-            "  SELECT ak.id, akp.product_id " +
-                "    FROM cp_activation_key ak " +
-                "    JOIN cp_activationkey_product akp ON akp.key_id = ak.id " +
-                "    LEFT JOIN cp_product p ON p.id = akp.product_id " +
-                "    WHERE ak.owner_id = ? " +
-                "      AND p.id IS NULL",
-            orgid
-        );
-
-        while (badObjectRefs.next()) {
-            passed = false;
-
-            String keyId = badObjectRefs.getString(1);
-            String productId = badObjectRefs.getString(2);
-
-            this.logger.error("  Activation Key \"%s\" references an unresolvable product: %s", keyId,
-                productId);
-        }
-
-        badObjectRefs.close();
+        // Impl Note:
+        // We don't need to check activation key products, since the migration just deletes these
+        // if they exist.
 
         return passed;
     }
 
-    private int fixBrokenActivationKeys(String orgid) throws DatabaseException, SQLException {
+    private int fixBrokenActivationKeys(Database database, String orgid)
+        throws DatabaseException, SQLException {
+
         ResultSet badObjectRefs = null;
         int brokenKeys = 0;
 
         try {
             // Check for bad product references on the activation keys
-            badObjectRefs = this.executeQuery(
+            badObjectRefs = database.executeQuery(
                 "  SELECT ak.id, akp.product_id " +
                     "    FROM cp_activation_key ak " +
                     "    JOIN cp_activationkey_product akp ON akp.key_id = ak.id " +
@@ -337,10 +401,9 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                 String keyId = badObjectRefs.getString(1);
                 String productId = badObjectRefs.getString(2);
 
-                executeUpdate(
+                database.executeUpdate(
                     "DELETE FROM cp_activationkey_product WHERE product_id = ? and key_id = ?",
-                    productId,
-                    keyId
+                    productId, keyId
                 );
             }
         }
@@ -349,6 +412,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                 badObjectRefs.close();
             }
         }
+
         return brokenKeys;
     }
 
@@ -361,11 +425,13 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
      * @param productRows
      *  A collection of object arrays representing a row of product data to insert
      */
-    private void bulkInsertProductData(List<Object[]> productRows) throws DatabaseException, SQLException {
-        if (productRows.size() > 0) {
-            this.logger.info("  Performing bulk migration of %d product entities", productRows.size());
+    private void bulkInsertProductData(Database database, List<Object[]> productRows)
+        throws DatabaseException, SQLException {
 
-            PreparedStatement statement = this.generateBulkInsertStatement(
+        if (productRows.size() > 0) {
+            this.log.info("  Performing bulk migration of %d product entities", productRows.size());
+
+            PreparedStatement statement = this.generateBulkInsertStatement(database,
                 "cp2_products", productRows.size(),
                 "uuid", "created", "updated", "multiplier", "product_id", "name", "locked"
             );
@@ -373,7 +439,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             int index = 0;
             for (Object[] row : productRows) {
                 for (Object col : row) {
-                    this.setParameter(statement, ++index, col);
+                    database.setParameter(statement, ++index, col);
                 }
             }
 
@@ -384,11 +450,11 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                     productRows.size(), count
                 );
 
-                this.logger.error(errmsg);
+                this.log.error(errmsg);
                 throw new DatabaseException(errmsg);
             }
 
-            this.logger.info("  Migrated %d products", count);
+            this.log.info("  Migrated %d products", count);
             statement.close();
         }
     }
@@ -400,13 +466,15 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
      *  The id of the owner/organization for which to migrate product data
      */
     @SuppressWarnings("checkstyle:methodlength")
-    protected void migrateProductData(String orgid) throws DatabaseException, SQLException {
-        this.logger.info("  Migrating product data...");
+    private void migrateProductData(Database database, String orgid)
+        throws DatabaseException, SQLException {
+
+        this.log.info("  Migrating product data...");
 
         List<Object[]> productRows = new LinkedList<>();
         Set<String> uuidCache = new HashSet<>();
 
-        ResultSet productInfo = this.executeQuery(
+        ResultSet productInfo = database.executeQuery(
             "SELECT DISTINCT p.id, p.created, p.updated, p.multiplier, p.name " +
             "FROM cp_product p " +
             "JOIN (" +
@@ -471,7 +539,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             String productUuid = this.migratedProducts.get(productId);
 
             if (productUuid == null) {
-                this.logger.info("    Migrating product: %s", productId);
+                this.log.info("    Migrating product: %s", productId);
 
                 productUuid = this.generateUUID();
 
@@ -491,7 +559,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                 // If we've collected a full "block" of content data, migrate the block
                 if (productRows.size() > maxrows) {
                     // Impl note: By some miracle, this doesn't close the outer result set.
-                    this.bulkInsertProductData(productRows);
+                    this.bulkInsertProductData(database, productRows);
                     productRows.clear();
                 }
 
@@ -504,7 +572,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
         productInfo.close();
 
         // Do a bulk insert of any remaining unmigrated products we've encountered
-        bulkInsertProductData(productRows);
+        this.bulkInsertProductData(database, productRows);
         productRows.clear();
 
         // // Do a bulk insert for all the products for this orgs...
@@ -523,7 +591,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                         statement.close();
                     }
 
-                    statement = this.generateBulkInsertStatement(
+                    statement = this.generateBulkInsertStatement(database,
                         "cp2_owner_products", remaining, "owner_id", "product_uuid"
                     );
 
@@ -532,8 +600,8 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
 
                 int index = 0;
                 while (remaining-- > 0) {
-                    this.setParameter(statement, ++index, orgid);
-                    this.setParameter(statement, ++index, uuidIterator.next());
+                    database.setParameter(statement, ++index, orgid);
+                    database.setParameter(statement, ++index, uuidIterator.next());
                 }
 
                 int count = statement.executeUpdate();
@@ -543,12 +611,12 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                         orgid, uuidCache.size(), count
                     );
 
-                    this.logger.error(errmsg);
+                    this.log.error(errmsg);
                     throw new DatabaseException(errmsg);
                 }
             }
 
-            this.logger.info("  Assigned %d products to org", uuidCache.size());
+            this.log.info("  Assigned %d products to org", uuidCache.size());
             statement.close();
         }
     }
@@ -562,11 +630,13 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
      * @param contentRows
      *  A collection of object arrays representing a row of content data to insert
      */
-    private void bulkInsertContentData(List<Object[]> contentRows) throws DatabaseException, SQLException {
-        if (contentRows.size() > 0) {
-            this.logger.info("  Performing bulk migration of %d content entities", contentRows.size());
+    private void bulkInsertContentData(Database database, List<Object[]> contentRows)
+        throws DatabaseException, SQLException {
 
-            PreparedStatement statement = this.generateBulkInsertStatement(
+        if (contentRows.size() > 0) {
+            this.log.info("  Performing bulk migration of %d content entities", contentRows.size());
+
+            PreparedStatement statement = this.generateBulkInsertStatement(database,
                 "cp2_content", contentRows.size(),
                 "uuid", "content_id", "created", "updated", "contenturl", "gpgurl", "label",
                 "metadataexpire", "name", "releasever", "requiredtags", "type", "vendor", "arches",
@@ -576,7 +646,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             int index = 0;
             for (Object[] row : contentRows) {
                 for (Object col : row) {
-                    this.setParameter(statement, ++index, col);
+                    database.setParameter(statement, ++index, col);
                 }
             }
 
@@ -587,11 +657,11 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                     contentRows.size(), count
                 );
 
-                this.logger.error(errmsg);
+                this.log.error(errmsg);
                 throw new DatabaseException(errmsg);
             }
 
-            this.logger.info("  Migrated %d content", count);
+            this.log.info("  Migrated %d content", count);
             statement.close();
         }
     }
@@ -600,13 +670,15 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
      * Migrates content data.
      */
     @SuppressWarnings("checkstyle:methodlength")
-    protected void migrateContentData(String orgid) throws DatabaseException, SQLException {
-        this.logger.info("  Migrating content data...");
+    private void migrateContentData(Database database, String orgid)
+        throws DatabaseException, SQLException {
+
+        this.log.info("  Migrating content data...");
 
         List<Object[]> contentRows = new LinkedList<>();
         Set<String> uuidCache = new HashSet<>();
 
-        ResultSet contentInfo = this.executeQuery(
+        ResultSet contentInfo = database.executeQuery(
             "SELECT DISTINCT c.id, c.created, c.updated, c.contenturl, c.gpgurl, c.label, " +
             "  c.metadataexpire, c.name, c.releasever, c.requiredtags, c.type, c.vendor, c.arches " +
             "FROM cp_content c " +
@@ -634,7 +706,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             String contentUuid = this.migratedContent.get(contentId);
 
             if (contentUuid == null) {
-                this.logger.info("    Migrating content: %s", contentId);
+                this.log.info("    Migrating content: %s", contentId);
 
                 contentUuid = this.generateUUID();
 
@@ -663,7 +735,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                 // If we've collected a full "block" of content data, migrate the block
                 if (contentRows.size() > maxrows) {
                     // Impl note: By some miracle, this doesn't close the outer result set.
-                    this.bulkInsertContentData(contentRows);
+                    this.bulkInsertContentData(database, contentRows);
                     contentRows.clear();
                 }
 
@@ -676,7 +748,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
         contentInfo.close();
 
         // Do a bulk insert of any remaining unmigrated content we've encountered
-        this.bulkInsertContentData(contentRows);
+        this.bulkInsertContentData(database, contentRows);
         contentRows.clear();
 
         // Do a bulk insert for all the content for this orgs...
@@ -695,7 +767,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                         statement.close();
                     }
 
-                    statement = this.generateBulkInsertStatement(
+                    statement = this.generateBulkInsertStatement(database,
                         "cp2_owner_content", remaining, "owner_id", "content_uuid"
                     );
 
@@ -704,8 +776,8 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
 
                 int index = 0;
                 while (remaining-- > 0) {
-                    this.setParameter(statement, ++index, orgid);
-                    this.setParameter(statement, ++index, uuidIterator.next());
+                    database.setParameter(statement, ++index, orgid);
+                    database.setParameter(statement, ++index, uuidIterator.next());
                 }
 
                 int count = statement.executeUpdate();
@@ -715,12 +787,12 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
                         orgid, uuidCache.size(), count
                     );
 
-                    this.logger.error(errmsg);
+                    this.log.error(errmsg);
                     throw new DatabaseException(errmsg);
                 }
             }
 
-            this.logger.info("  Assigned %d contents to org", uuidCache.size());
+            this.log.info("  Assigned %d contents to org", uuidCache.size());
             statement.close();
         }
     }
@@ -728,10 +800,10 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
     /**
      * Migrates data linked to objects we have already migrated
      */
-    protected void migrateRelatedData() throws DatabaseException, SQLException {
-        this.logger.info("Migrating activation keys...");
+    private void migrateRelatedData(Database database) throws DatabaseException, SQLException {
+        this.log.info("Migrating activation keys...");
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_activation_key_products(key_id, product_uuid) " +
             "SELECT akp.key_id, p.uuid " +
             "FROM cp_activationkey_product akp " +
@@ -739,16 +811,16 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
         );
 
 
-        this.logger.info("Migrating linked product data...");
+        this.log.info("Migrating linked product data...");
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_product_attributes (id, created, updated, name, value, product_uuid) " +
             "SELECT pa.id, pa.created, pa.updated, pa.name, pa.value, p.uuid " +
             "FROM cp_product_attribute pa " +
             "JOIN cp2_products p ON pa.product_id = p.product_id"
         );
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_product_content (product_uuid, content_uuid, enabled, created, updated) " +
             "SELECT p.uuid, c.uuid, pc.enabled, pc.created, pc.updated " +
             "FROM cp_product_content pc " +
@@ -756,21 +828,21 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             "JOIN cp2_content c ON c.content_id = pc.content_id "
         );
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_product_certificates (id, created, updated, cert, privatekey, product_uuid) " +
             "SELECT pc.id, pc.created, pc.updated, pc.cert, pc.privatekey, p.uuid " +
             "FROM cp_product_certificate pc " +
             "JOIN cp2_products p ON pc.product_id = p.product_id"
         );
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_product_dependent_products (product_uuid, element) " +
             "SELECT p.uuid, pdp.element " +
             "FROM cp_product_dependent_products pdp " +
             "JOIN cp2_products p ON pdp.cp_product_id = p.product_id"
         );
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_pool_provided_products (pool_id, product_uuid) " +
             "SELECT pool.id, prod.uuid " +
             "FROM cp_pool pool " +
@@ -779,7 +851,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             "WHERE pp.dtype = 'provided'"
         );
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_pool_derprov_products " +
             "SELECT pool.id, prod.uuid " +
             "FROM cp_pool pool " +
@@ -789,9 +861,9 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
         );
 
 
-        this.logger.info("Migrating linked content data...");
+        this.log.info("Migrating linked content data...");
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_environment_content " +
             "  (id, created, updated, content_uuid, enabled, environment_id) " +
             "SELECT ec.id, ec.created, ec.updated, c.uuid, ec.enabled, ec.environment_id " +
@@ -799,7 +871,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             "JOIN cp2_content c ON ec.contentid = c.content_id"
         );
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_content_modified_products (content_uuid, element) " +
             "SELECT c.uuid, cmp.element " +
             "FROM cp_content_modified_products cmp " +
@@ -807,16 +879,16 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
         );
 
 
-        this.logger.info("Migrating global pool data...");
+        this.log.info("Migrating global pool data...");
 
-        this.executeUpdate(
+        database.executeUpdate(
             "UPDATE cp_pool p SET product_uuid = " +
             "  (SELECT prod.uuid FROM cp2_products prod WHERE prod.product_id = p.product_id_old), " +
             "derived_product_uuid = " +
             "  (SELECT prod.uuid FROM cp2_products prod WHERE prod.product_id = p.derived_product_id_old)"
         );
 
-        this.executeUpdate(
+        database.executeUpdate(
             "INSERT INTO cp2_pool_source_sub " +
             "  (id, subscription_id, subscription_sub_key, pool_id, created, updated) " +
             "SELECT id, subscriptionid, subscriptionsubkey, pool_id, created, updated " +
@@ -824,7 +896,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
         );
 
         // Migrate upstream tracking columns from subscription to master pool
-        ResultSet subscriptionInfo = this.executeQuery(
+        ResultSet subscriptionInfo = database.executeQuery(
             "SELECT ss.pool_id, s.cdn_id, s.certificate_id, s.upstream_entitlement_id, " +
             "  s.upstream_consumer_id, s.upstream_pool_id " +
             "FROM cp_subscription s " +
@@ -841,7 +913,7 @@ public class PerOrgProductsMigrationTask extends LiquibaseCustomTask {
             String upstreamConsumerId = subscriptionInfo.getString(5);
             String upstreamPoolId = subscriptionInfo.getString(6);
 
-            int updated = this.executeUpdate(
+            int updated = database.executeUpdate(
                 "UPDATE cp_pool SET cdn_id=?, certificate_id=?, upstream_entitlement_id=?, " +
                 "  upstream_consumer_id=?, upstream_pool_id=? " +
                 "WHERE id=?",

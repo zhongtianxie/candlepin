@@ -40,7 +40,7 @@ dependencies {
     implementation libraries.validator
 
     testImplementation libraries.core_testing
-    testImplementation libraries.liquibase_slf4j
+    // testImplementation libraries.liquibase_slf4j
     testImplementation libraries.jmock
 }
 

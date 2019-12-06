@@ -122,8 +122,8 @@ ext.libraries = [
         "aopalliance:aopalliance:1.0",
         "javax.inject:javax.inject:1",
     ],
-    liquibase: "org.liquibase:liquibase-core:3.1.0",
-    liquibase_slf4j: "com.mattbertolini:liquibase-slf4j:1.2.1",
+    liquibase: "org.liquibase:liquibase-core:3.8.2",
+
     oauth: [
         "net.oauth.core:oauth:20100527",
         "net.oauth.core:oauth-provider:20100527",

@@ -97,7 +97,7 @@
         </preConditions>
 
         <comment>Migrate subscriptions on duplicate pools to a single pool per set</comment>
-        <customChange class="org.candlepin.liquibase.FixDuplicatePoolsLiquibaseWrapper">
+        <customChange class="org.candlepin.liquibase.FixDuplicatePoolsTask">
         </customChange>
     </changeSet>
 

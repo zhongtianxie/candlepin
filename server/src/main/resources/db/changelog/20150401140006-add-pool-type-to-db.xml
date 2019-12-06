@@ -21,7 +21,7 @@
 
         <comment>Add pool types to the existing pools</comment>
 
-        <customChange class="org.candlepin.liquibase.PoolTypeUpgradeLiquibaseWrapper"/>
+        <customChange class="org.candlepin.liquibase.PoolTypeUpgradeTask"/>
     </changeSet>
 
     <changeSet id="20150401140006-3" author="crog">

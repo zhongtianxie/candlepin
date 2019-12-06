@@ -17,7 +17,7 @@
 
         <comment>Performs per-org-product specific migration validation</comment>
 
-        <customChange class="org.candlepin.liquibase.PerOrgProductsMigrationValidationLiquibaseWrapper"/>
+        <customChange class="org.candlepin.liquibase.PerOrgProductsMigrationValidationTask"/>
     </changeSet>
 
 </databaseChangeLog>

@@ -14,13 +14,12 @@
  */
 package org.candlepin.liquibase;
 
-import liquibase.database.Database;
 import liquibase.exception.DatabaseException;
+import liquibase.exception.ValidationErrors;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -34,9 +33,23 @@ import java.util.Map.Entry;
  * so that it may be used more easily as a one-off script
  * in scenarios that do not use liquibase.
  */
-public class FixDuplicatePoolsTask extends LiquibaseCustomTask {
-    public FixDuplicatePoolsTask(Database database, CustomTaskLogger logger) {
-        super(database, logger);
+public class FixDuplicatePoolsTask extends AbstractLiquibaseTask {
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void init() {
+        // Intentionally left empty
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public ValidationErrors validate(Database database) {
+        // No validation needed
+        return null;
     }
 
     /**
@@ -48,15 +61,15 @@ public class FixDuplicatePoolsTask extends LiquibaseCustomTask {
      *
      * Make sure that Branding is also deleted on cascade on the database level,
      * hibernate annotations don't apply
-     *
      */
     @Override
-    public void execute() throws DatabaseException, SQLException {
-        logger.info("--- Running update script ---");
+    public void execute(Database database) throws DatabaseException, SQLException {
+        this.log.info("--- Running update script ---");
+
         // Get a map of source subscription to pool ids
-        Map<SubPair, List<String>> subPoolsMap = getSubPoolMap();
-        logger.info("Found " + subPoolsMap.keySet().size() + " subscriptions " +
-            "with duplicate pools.");
+        Map<SubPair, List<String>> subPoolsMap = getSubPoolMap(database);
+        this.log.info("Found %d subscriptions with duplicate pools", subPoolsMap.keySet().size());
+
         // Nothing to do if there aren't any duplicates
         if (!subPoolsMap.isEmpty()) {
             for (Entry<SubPair, List<String>> entry : subPoolsMap.entrySet()) {
@@ -66,22 +79,34 @@ public class FixDuplicatePoolsTask extends LiquibaseCustomTask {
 
                 // Keep one pool
                 String poolToKeep = ids.get(0);
+
                 // Remove the rest
                 for (int i = 1, len = ids.size(); i < len; i++) {
                     poolsToRemove.add(ids.get(i));
                 }
-                logger.info("Removing " + poolsToRemove.size() +
-                    " pools for subscription " + sub);
-                updateEntsForIds(poolsToRemove, poolToKeep);
-                removePoolsWithIds(poolsToRemove);
+
+                this.log.info("Removing %d pools for subscription: %s", poolsToRemove.size(), sub);
+                updateEntsForIds(database, poolsToRemove, poolToKeep);
+                removePoolsWithIds(database, poolsToRemove);
             }
         }
-        logger.info("--- Finished update script ---");
+        this.log.info("--- Finished update script ---");
     }
 
-    private int removePoolsWithIds(List<String> dupeIds) throws SQLException, DatabaseException {
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String getConfirmationMessage() {
+        return null;
+    }
+
+    private int removePoolsWithIds(Database database, List<String> dupeIds)
+        throws SQLException, DatabaseException {
+
         String sql = "DELETE FROM cp_pool " +
             "WHERE id IN (";
+
         for (int i = 0, len = dupeIds.size(); i < len; i++) {
             sql += "?";
             if (i < len - 1) {
@@ -89,17 +114,23 @@ public class FixDuplicatePoolsTask extends LiquibaseCustomTask {
             }
         }
         sql += ")";
-        PreparedStatement stmt = connection.prepareStatement(sql);
-        for (int i = 0, max = dupeIds.size(); i < max; i++) {
-            stmt.setString(i + 1, dupeIds.get(i));
+
+        try (PreparedStatement stmt = database.prepareStatement(sql)) {
+            for (int i = 0, max = dupeIds.size(); i < max; i++) {
+                stmt.setString(i + 1, dupeIds.get(i));
+            }
+
+            return stmt.executeUpdate();
         }
-        return stmt.executeUpdate();
     }
 
-    private int updateEntsForIds(List<String> dupeIds, String goodId) throws SQLException, DatabaseException {
+    private int updateEntsForIds(Database database, List<String> dupeIds, String goodId)
+        throws SQLException, DatabaseException {
+
         String sql = "UPDATE cp_entitlement " +
             "SET pool_id=?, dirty=? " +
             "WHERE pool_id IN (";
+
         for (int i = 0, len = dupeIds.size(); i < len; i++) {
             sql += "?";
             if (i != len - 1) {
@@ -107,24 +138,29 @@ public class FixDuplicatePoolsTask extends LiquibaseCustomTask {
             }
         }
         sql += ")";
-        PreparedStatement stmt = connection.prepareStatement(sql);
-        stmt.setString(1, goodId);
-        // Different databases represent booleans differently.  Even though this
-        // is a static value, we need to let the jdbc driver handle it
-        stmt.setBoolean(2, true);
-        for (int i = 0, max = dupeIds.size(); i < max; i++) {
-            stmt.setString(i + 3, dupeIds.get(i));
+
+        try (PreparedStatement stmt = database.prepareStatement(sql)) {
+            stmt.setString(1, goodId);
+
+            // Different databases represent booleans differently.  Even though this
+            // is a static value, we need to let the jdbc driver handle it
+            stmt.setBoolean(2, true);
+            for (int i = 0, max = dupeIds.size(); i < max; i++) {
+                stmt.setString(i + 3, dupeIds.get(i));
+            }
+
+            return stmt.executeUpdate();
         }
-        return stmt.executeUpdate();
     }
 
     /*
      * Builds a map of subid-subkey -> [ids, with, duplicates]
      */
-    private Map<SubPair, List<String>> getSubPoolMap() throws SQLException, DatabaseException {
-        Statement stmt = connection.createStatement();
+    private Map<SubPair, List<String>> getSubPoolMap(Database database)
+        throws SQLException, DatabaseException {
+
         Map<SubPair, List<String>> subPoolsMap = new HashMap<>();
-        ResultSet rs = stmt.executeQuery(
+        ResultSet rs = database.executeQuery(
             "SELECT cp_pool.id, cp_pool.subscriptionid, " +
             "cp_pool.subscriptionsubkey, cp_pool.owner_id " +
             "FROM cp_pool, " +
@@ -149,8 +185,8 @@ public class FixDuplicatePoolsTask extends LiquibaseCustomTask {
             }
             else if (!subOwners.get(current).equals(rs.getString(4))) {
                 // Make sure owners are the same
-                logger.error(String.format("Owners '%s' and '%s' both have pools from subscription: %s",
-                    rs.getString(4), subOwners.get(current), current));
+                this.log.error("Owners '%s' and '%s' both have pools from subscription: %s",
+                    rs.getString(4), subOwners.get(current), current);
 
                 throw new DatabaseException("Pools exist for subscription " + current + " within multiple " +
                     "owners.");

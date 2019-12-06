@@ -37,6 +37,9 @@ JBOSS_CLASSPATH = "/var/lib/jbossas/server/production/deploy/candlepin.war/WEB-I
 TOMCAT_CLASSPATH = "/var/lib/" + TOMCAT + "/webapps/candlepin/WEB-INF/classes/"
 JAR_PATH = "/var/lib/" + TOMCAT + "/webapps/candlepin/WEB-INF/lib/"
 
+CP_LIQUIBASE_HELPER = '/usr/share/candlepin/liquibase.sh'
+CP_LIQUIBASE_HELPER_DEV = 'bin/liquibase.sh'
+
 def run_command(command):
     (status, output) = getstatusoutput(command)
     if status > 0:
@@ -52,19 +55,22 @@ def error_out(command, status, output):
 
 
 class DbSetup(object):
-    def __init__(self, username, password, db, community, verbose):
+    def __init__(self, username, password, db, community, verbose, dev):
         self.username = username
         self.db = db
         self.password = password
         self.community = community
         self.verbose = verbose
+        self.dev = dev
 
     def create(self):
         raise NotImplementedError("Implemented by subclasses")
 
     def initialize_schema(self):
         print("Loading Candlepin schema")
-        self._run_liquibase("db/changelog/changelog-create.xml")
+
+        options = self._build_liquibase_options("db/changelog/changelog-create.xml")
+        self._run_liquibase(options, "migrate")
 
     def drop(self):
         raise NotImplementedError("Implemented by subclasses")
@@ -72,31 +78,35 @@ class DbSetup(object):
     def validate(self):
         """ Validates an existing candlepin database. """
         print("Validating Candlepin database")
-        self._run_liquibase("db/changelog/changelog-validate.xml")
+
+        options = self._build_liquibase_options("db/changelog/changelog-update.xml")
+        self._run_liquibase(options, "validate")
 
     def update(self):
         """ Upgrades an existing candlepin database. """
         print("Migrating Candlepin database")
-        self._run_liquibase("db/changelog/changelog-update.xml")
 
-    def _run_liquibase(self, changelog_path):
+        options = self._build_liquibase_options("db/changelog/changelog-update.xml")
+        self._run_liquibase(options, "migrate")
+
+    def _build_liquibase_options(self, changelog_path):
         # Figure out what to append to the classpath for liquibase:
-        classpath = ":".join(glob.glob(JAR_PATH + "*postgresql*.jar"))
+        classpath = self.jdbc_jars
 
-        if os.path.exists('target/classes'):
+        if self.dev and os.path.exists('build/classes/java/main/'):
+            classpath = "%s:%s" % (classpath, 'build/classes/java/main/')
+        elif self.dev and os.path.exists('target/classes'):
             classpath = "%s:%s" % (classpath, 'target/classes/')
-
-        if os.path.exists(TOMCAT_CLASSPATH):
+        elif os.path.exists(TOMCAT_CLASSPATH):
             classpath = "%s:%s" % (classpath, TOMCAT_CLASSPATH)
-
-        if os.path.exists(JBOSS_CLASSPATH):
+        elif os.path.exists(JBOSS_CLASSPATH):
             classpath = "%s:%s" % (classpath, JBOSS_CLASSPATH)
 
-        liquibase_options = "--driver=%s --classpath=%s --changeLogFile=%s --url=\"%s\" --username=$DBUSERNAME" % (
+        liquibase_options = "--driver=%s --classpath=%s --changeLogFile=%s --url=%s --username=$DBUSERNAME" % (
             self.driver_class,
             classpath,
             changelog_path,
-            self.jdbc_url,
+            self.jdbc_url
         )
 
         os.environ["DBUSERNAME"] = self.username
@@ -108,28 +118,42 @@ class DbSetup(object):
         # Add in output level. By default, Liquibase defaults to "off"
         liquibase_options += " --logLevel=%s" % ('debug' if self.verbose else 'severe')
 
-        print(liquibase_options)
+        return liquibase_options
 
-        output = run_command("/usr/share/candlepin/liquibase.sh %s migrate -Dcommunity=%s" % (liquibase_options, self.community))
+    def _run_liquibase(self, options, action):
+        if self.dev and os.path.exists(CP_LIQUIBASE_HELPER_DEV):
+            target = CP_LIQUIBASE_HELPER_DEV
+        elif os.path.exists(CP_LIQUIBASE_HELPER):
+            target = CP_LIQUIBASE_HELPER
+        else:
+            print("ERROR: Cannot locate Candlepin-specific Liquibase library")
+            sys.exit(1)
+
+        output = run_command("%s %s %s -Dcommunity=%s" % (target, options, action, self.community))
         print(output)
 
 
 class PostgresqlSetup(DbSetup):
-    def __init__(self, host, port, username, password, db, community, verbose, ssl, sslfactory, sslcertpath):
-        super(PostgresqlSetup, self).__init__(username, password, db, community, verbose)
+    def __init__(self, host, port, username, password, db, community, verbose, dev, ssl, sslfactory, sslcertpath):
+        super(PostgresqlSetup, self).__init__(username, password, db, community, verbose, dev)
         self.host = host
         self.port = port
         self.driver_class = "org.postgresql.Driver"
+        self.jdbc_jars = ":".join(glob.glob(JAR_PATH + "*postgresql*.jar"))
 
         # Adjust the jdbc URL for correct deployment:
         self.jdbc_url = "jdbc:postgresql:"
+
         if host is not None:
             self.jdbc_url = "%s//%s" % (self.jdbc_url, host)
+
             # Requires host:
             if port is not None:
                 self.jdbc_url = "%s:%s" % (self.jdbc_url, port)
+
             # Append / for the database name:
             self.jdbc_url = "%s/" % (self.jdbc_url)
+
         self.jdbc_url = "%s%s" % (self.jdbc_url, db)
 
         # Appending SSL connection details
@@ -147,11 +171,8 @@ class PostgresqlSetup(DbSetup):
 
         print("Configuring PostgreSQL with JDBC URL: %s" % self.jdbc_url)
 
-        if password:
-            os.environ["PGPASSWORD"] = password
-
     def create(self):
-        print("Creating candlepin database 2")
+        print("Creating Candlepin database")
         command = "createdb -U %s" % (self.username)
         if self.host:
             command = "%s -h %s" % (command, self.host)
@@ -160,19 +181,17 @@ class PostgresqlSetup(DbSetup):
         command = "%s %s" % (command, self.db)
         (status, output) = getstatusoutput(command)
 
-        if status > 0 and output.find("already exists") > 0:
-            print("Candlepin database already exists, skipping...")
-            return
-        elif status > 0:
-            error_out(command, status, output)
+        if status > 0:
+            if output.find("already exists") != -1:
+                print("Candlepin database already exists, skipping...")
+            else:
+                error_out(command, status, output)
 
     def drop(self):
-        print("Dropping candlepin database")
+        print("Dropping Candlepin database")
         command = "dropdb -U %s %s" % (self.username, self.db)
         (status, output) = getstatusoutput(command)
-        if status > 0 and output.find('does not exist') > 0:
-            return
-        elif status > 0:
+        if status > 0 and output.find('does not exist') == -1:
             error_out(command, status, output)
 
 
@@ -228,6 +247,10 @@ if __name__ == "__main__":
             dest="verbose", action="store_true", default=False,
             help="enables verbose logging/output")
 
+    parser.add_option("--dev",
+            dest="dev", action="store_true", default=False,
+            help="enables using local developer directories for locating utility scripts and change logs")
+
     parser.add_option("--ssl",
             dest="ssl",
             help="true if ssl connection needed (optional)")
@@ -271,7 +294,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     dbsetup = PostgresqlSetup(options.dbhost, options.dbport, options.dbuser, options.dbpassword,
-        options.db, options.community, options.verbose, options.ssl, options.sslfactory, options.sslcertpath)
+        options.db, options.community, options.verbose, options.dev, options.ssl, options.sslfactory, options.sslcertpath)
 
     if options.create:
         if options.drop:

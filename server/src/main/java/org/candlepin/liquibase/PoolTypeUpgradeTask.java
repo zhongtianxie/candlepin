@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2009 - 2012 Red Hat, Inc.
+ * Copyright (c) 2009 - 2019 Red Hat, Inc.
  *
  * This software is licensed to you under the GNU General Public License,
  * version 2 (GPLv2). There is NO WARRANTY for this software, express or
@@ -14,8 +14,9 @@
  */
 package org.candlepin.liquibase;
 
-import liquibase.database.Database;
+import liquibase.database.jvm.JdbcConnection;
 import liquibase.exception.DatabaseException;
+import liquibase.exception.ValidationErrors;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -27,17 +28,131 @@ import java.util.ArrayList;
 /**
  * The PoolTypeUpgradeTask performs the post-db upgrade data migration to the cp2_* tables.
  */
-public class PoolTypeUpgradeTask extends LiquibaseCustomTask {
+public class PoolTypeUpgradeTask extends AbstractLiquibaseTask {
 
     public static final int UPDATE_BATCH_SIZE = 1024;
 
-    public PoolTypeUpgradeTask(Database database, CustomTaskLogger logger) {
-        super(database, logger);
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public void init() {
+        // Intentionally left empty
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public ValidationErrors validate(Database database) {
+        // No validation needed
+        return null;
+    }
+
+    /**
+     * Executes the multi-org upgrade task.
+     *
+     * @throws DatabaseException
+     *  if an error occurs while performing a database operation
+     *
+     * @throws SQLException
+     *  if an error occurs while executing an SQL statement
+     */
+    @Override
+    public void execute(Database database) throws DatabaseException, SQLException {
+        JdbcConnection connection = database.getJdbcConnection();
+
+        // Store the connection's auto commit setting, so we may temporarily clobber it.
+        boolean autocommit = connection.getAutoCommit();
+
+        try {
+            connection.setAutoCommit(false);
+
+            this.executeBulkSameSourceUpdate(database,
+                "UPDATE cp_pool SET type = 'UNMAPPED_GUEST' WHERE cp_pool.id IN (?)",
+                "SELECT P.id " +
+                "FROM cp_pool P " +
+                "  INNER JOIN cp_pool_attribute PA1 " +
+                "    ON (P.id = PA1.pool_id AND PA1.name = 'pool_derived') " +
+                "  INNER JOIN cp_pool_attribute PA2 " +
+                "    ON (P.id = PA2.pool_id AND PA2.name = 'unmapped_guests_only') " +
+                "WHERE P.type IS NULL AND PA1.value = 'true' AND PA2.value = 'true' "
+            );
+
+            this.executeBulkSameSourceUpdate(database,
+                "UPDATE cp_pool SET type = 'ENTITLEMENT_DERIVED' WHERE cp_pool.id IN (?)",
+                "SELECT P.id " +
+                "FROM cp_pool P " +
+                "  INNER JOIN cp_pool_attribute PA1 " +
+                "    ON (P.id = PA1.pool_id AND PA1.name = 'pool_derived') " +
+                "  LEFT JOIN cp_pool_attribute PA2 " +
+                "    ON (P.id = PA2.pool_id AND PA2.name = 'unmapped_guests_only') " +
+                "WHERE " +
+                "  P.type IS NULL " +
+                "  AND PA1.value = 'true' AND PA2.id IS NULL " +
+                "  AND (P.sourceentitlement_id IS NOT NULL AND P.sourceentitlement_id != '') "
+            );
+
+            this.executeBulkSameSourceUpdate(database,
+                "UPDATE cp_pool SET type = 'STACK_DERIVED' WHERE cp_pool.id IN (?)",
+                "SELECT P.id " +
+                "FROM cp_pool P " +
+                "  INNER JOIN cp_pool_attribute PA1 " +
+                "    ON (P.id = PA1.pool_id AND PA1.name = 'pool_derived') " +
+                "  INNER JOIN cp_pool_source_stack SS " +
+                "    ON P.id = SS.derivedpool_id " +
+                "  LEFT JOIN cp_pool_attribute PA2 " +
+                "    ON (P.id = PA2.pool_id AND PA2.name = 'unmapped_guests_only') " +
+                "WHERE " +
+                "  P.type IS NULL " +
+                "  AND PA1.value = 'true' AND PA2.id IS NULL " +
+                "  AND (P.sourceentitlement_id IS NULL OR P.sourceentitlement_id = '') "
+            );
+
+            this.executeBulkSameSourceUpdate(database,
+                "UPDATE cp_pool SET type = 'BONUS' WHERE cp_pool.id IN (?)",
+                "SELECT P.id " +
+                "FROM cp_pool P " +
+                "  INNER JOIN cp_pool_attribute PA1 " +
+                "    ON (P.id = PA1.pool_id AND PA1.name = 'pool_derived') " +
+                "  LEFT JOIN cp_pool_source_stack SS " +
+                "    ON P.id = SS.derivedpool_id " +
+                "  LEFT JOIN cp_pool_attribute PA2 " +
+                "    ON (P.id = PA2.pool_id AND PA2.name = 'unmapped_guests_only') " +
+                "WHERE " +
+                "  P.type IS NULL " +
+                "  AND PA1.value = 'true' AND PA2.id IS NULL " +
+                "  AND (P.sourceentitlement_id IS NULL OR P.sourceentitlement_id = '') " +
+                "  AND SS.id IS NULL "
+            );
+
+            this.executeBulkSameSourceUpdate(database,
+                "UPDATE cp_pool SET type = 'NORMAL' WHERE cp_pool.id IN (?)",
+                "SELECT P.id FROM cp_pool P WHERE P.type IS NULL"
+            );
+
+            connection.commit();
+        }
+        finally {
+            // Restore original autocommit state
+            connection.setAutoCommit(autocommit);
+        }
+    }
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    public String getConfirmationMessage() {
+        return "Pool types upgraded succesfully";
     }
 
     /**
      * Executes a bulk update on a table from which we'll be querying data. Used to work around an
      * issue with MySQL/MariaDB in which you cannot query a table whilst it's being updated.
+     *
+     * @param database
+     *  the database instance to target
      *
      * @param updateSQL
      *  The SQL to execute to perform the update. Must have a single parameter for a list of IDs to
@@ -53,8 +168,8 @@ public class PoolTypeUpgradeTask extends LiquibaseCustomTask {
      * @return
      *  the total number of rows affected by the entire update
      */
-    protected int executeBulkSameSourceUpdate(String updateSQL, String querySQL, Object... argv)
-        throws DatabaseException, SQLException {
+    protected int executeBulkSameSourceUpdate(Database database, String updateSQL, String querySQL,
+        Object... argv) throws DatabaseException, SQLException {
 
         int rows = 0;
         int count = 0;
@@ -62,7 +177,7 @@ public class PoolTypeUpgradeTask extends LiquibaseCustomTask {
         ArrayList<String> list = new ArrayList<>(UPDATE_BATCH_SIZE);
         StringBuilder paramList;
 
-        PreparedStatement queryStatement = this.prepareStatement(querySQL, argv);
+        PreparedStatement queryStatement = database.prepareStatement(querySQL, argv);
         queryStatement.setMaxRows(UPDATE_BATCH_SIZE);
 
         do {
@@ -74,7 +189,7 @@ public class PoolTypeUpgradeTask extends LiquibaseCustomTask {
             }
 
             results.close();
-            this.logger.info(String.format("Received %d rows from query.", list.size()));
+            this.log.info("Received %d rows from query.", list.size());
 
             count = 0;
 
@@ -90,8 +205,8 @@ public class PoolTypeUpgradeTask extends LiquibaseCustomTask {
 
                 String expandedUpdateSQL = updateSQL.replace("?", paramList.toString());
 
-                count = this.executeUpdate(expandedUpdateSQL, list.toArray());
-                this.logger.info(String.format("%d rows updated", count));
+                count = database.executeUpdate(expandedUpdateSQL, list.toArray());
+                this.log.info("%d rows updated", count);
 
                 rows += count;
             }
@@ -99,93 +214,8 @@ public class PoolTypeUpgradeTask extends LiquibaseCustomTask {
 
         queryStatement.close();
 
-        this.logger.info(String.format("%d total rows updated", rows));
+        this.log.info("%d total rows updated", rows);
 
         return rows;
     }
-
-
-    /**
-     * Executes the multi-org upgrade task.
-     *
-     * @throws DatabaseException
-     *  if an error occurs while performing a database operation
-     *
-     * @throws SQLException
-     *  if an error occurs while executing an SQL statement
-     */
-    public void execute() throws DatabaseException, SQLException {
-        // Store the connection's auto commit setting, so we may temporarily clobber it.
-        boolean autocommit = this.connection.getAutoCommit();
-        this.connection.setAutoCommit(false);
-
-        this.executeBulkSameSourceUpdate(
-            "UPDATE cp_pool SET type = 'UNMAPPED_GUEST' WHERE cp_pool.id IN (?)",
-            "SELECT P.id " +
-            "FROM cp_pool P " +
-            "  INNER JOIN cp_pool_attribute PA1 " +
-            "    ON (P.id = PA1.pool_id AND PA1.name = 'pool_derived') " +
-            "  INNER JOIN cp_pool_attribute PA2 " +
-            "    ON (P.id = PA2.pool_id AND PA2.name = 'unmapped_guests_only') " +
-            "WHERE P.type IS NULL AND PA1.value = 'true' AND PA2.value = 'true' "
-        );
-
-        this.executeBulkSameSourceUpdate(
-            "UPDATE cp_pool SET type = 'ENTITLEMENT_DERIVED' WHERE cp_pool.id IN (?)",
-            "SELECT P.id " +
-            "FROM cp_pool P " +
-            "  INNER JOIN cp_pool_attribute PA1 " +
-            "    ON (P.id = PA1.pool_id AND PA1.name = 'pool_derived') " +
-            "  LEFT JOIN cp_pool_attribute PA2 " +
-            "    ON (P.id = PA2.pool_id AND PA2.name = 'unmapped_guests_only') " +
-            "WHERE " +
-            "  P.type IS NULL " +
-            "  AND PA1.value = 'true' AND PA2.id IS NULL " +
-            "  AND (P.sourceentitlement_id IS NOT NULL AND P.sourceentitlement_id != '') "
-        );
-
-        this.executeBulkSameSourceUpdate(
-            "UPDATE cp_pool SET type = 'STACK_DERIVED' WHERE cp_pool.id IN (?)",
-            "SELECT P.id " +
-            "FROM cp_pool P " +
-            "  INNER JOIN cp_pool_attribute PA1 " +
-            "    ON (P.id = PA1.pool_id AND PA1.name = 'pool_derived') " +
-            "  INNER JOIN cp_pool_source_stack SS " +
-            "    ON P.id = SS.derivedpool_id " +
-            "  LEFT JOIN cp_pool_attribute PA2 " +
-            "    ON (P.id = PA2.pool_id AND PA2.name = 'unmapped_guests_only') " +
-            "WHERE " +
-            "  P.type IS NULL " +
-            "  AND PA1.value = 'true' AND PA2.id IS NULL " +
-            "  AND (P.sourceentitlement_id IS NULL OR P.sourceentitlement_id = '') "
-        );
-
-        this.executeBulkSameSourceUpdate(
-            "UPDATE cp_pool SET type = 'BONUS' WHERE cp_pool.id IN (?)",
-            "SELECT P.id " +
-            "FROM cp_pool P " +
-            "  INNER JOIN cp_pool_attribute PA1 " +
-            "    ON (P.id = PA1.pool_id AND PA1.name = 'pool_derived') " +
-            "  LEFT JOIN cp_pool_source_stack SS " +
-            "    ON P.id = SS.derivedpool_id " +
-            "  LEFT JOIN cp_pool_attribute PA2 " +
-            "    ON (P.id = PA2.pool_id AND PA2.name = 'unmapped_guests_only') " +
-            "WHERE " +
-            "  P.type IS NULL " +
-            "  AND PA1.value = 'true' AND PA2.id IS NULL " +
-            "  AND (P.sourceentitlement_id IS NULL OR P.sourceentitlement_id = '') " +
-            "  AND SS.id IS NULL "
-        );
-
-        this.executeBulkSameSourceUpdate(
-            "UPDATE cp_pool SET type = 'NORMAL' WHERE cp_pool.id IN (?)",
-            "SELECT P.id FROM cp_pool P WHERE P.type IS NULL"
-        );
-
-
-        // Commit & restore original autocommit state
-        this.connection.commit();
-        this.connection.setAutoCommit(autocommit);
-    }
-
 }

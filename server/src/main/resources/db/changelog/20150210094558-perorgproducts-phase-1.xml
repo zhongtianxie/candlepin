@@ -581,7 +581,7 @@
 
         <comment>Migrate data from obsoleted tables to new org-specific tables.</comment>
 
-        <customChange class="org.candlepin.liquibase.PerOrgProductsMigrationLiquibaseWrapper"/>
+        <customChange class="org.candlepin.liquibase.PerOrgProductsMigrationTask"/>
     </changeSet>
 
 
