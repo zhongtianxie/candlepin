@@ -70,7 +70,7 @@ public class Transactional<O> {
          * @return
          *  the output of the operation (optional)
          */
-        O execute(Object... args);
+        O execute(Object... args) throws Exception;
     }
 
     /**
@@ -269,7 +269,7 @@ public class Transactional<O> {
      * @return
      *  the output of the action
      */
-    public O execute(Object... args) {
+    public O execute(Object... args) throws Exception {
         if (this.action == null) {
             throw new IllegalStateException("no action provided");
         }

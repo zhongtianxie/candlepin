@@ -138,7 +138,7 @@ public class HypervisorUpdateJob implements AsyncJob {
 
             final HypervisorList hypervisors = parsedHypervisors(arguments);
             final HypervisorUpdateAction.Result updateResult = hypervisorUpdateAction.update(
-                owner, hypervisors.getHypervisors(), create, principal, jobReporterId);
+                owner, hypervisors, create, principal, jobReporterId);
             final HypervisorUpdateResultDTO result = updateResult.getResult();
             final VirtConsumerMap hypervisorKnownConsumersMap = updateResult.getKnownConsumers();
 

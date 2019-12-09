@@ -35,6 +35,8 @@ import org.candlepin.async.JobConfigValidationException;
 import org.candlepin.async.JobExecutionContext;
 import org.candlepin.async.JobExecutionException;
 import org.candlepin.auth.Principal;
+import org.candlepin.common.config.Configuration;;
+import org.candlepin.config.CandlepinCommonTestConfig;
 import org.candlepin.dto.ModelTranslator;
 import org.candlepin.dto.StandardTranslator;
 import org.candlepin.dto.api.v1.ConsumerDTO;
@@ -82,6 +84,7 @@ public class HypervisorUpdateJobTest {
     private HypervisorUpdateAction hypervisorUpdateAction;
     private I18n i18n;
     private SubscriptionServiceAdapter subAdapter;
+    private Configuration config;
 
     private ModelTranslator translator;
 
@@ -99,6 +102,8 @@ public class HypervisorUpdateJobTest {
         consumerResource = mock(ConsumerResource.class);
         consumerTypeCurator = mock(ConsumerTypeCurator.class);
         subAdapter = mock(SubscriptionServiceAdapter.class);
+        config = new CandlepinCommonTestConfig();
+
         objectMapper = new ObjectMapper();
         when(owner.getId()).thenReturn("joe");
 
@@ -124,7 +129,7 @@ public class HypervisorUpdateJobTest {
                 "}]}";
 
         hypervisorUpdateAction = new HypervisorUpdateAction(
-            consumerCurator, consumerTypeCurator, consumerResource, subAdapter, translator);
+            consumerCurator, consumerTypeCurator, consumerResource, subAdapter, translator, config);
     }
 
     @Test
@@ -210,6 +215,7 @@ public class HypervisorUpdateJobTest {
         when(ownerCurator.getByKey(eq("joe"))).thenReturn(owner);
         when(ownerCurator.findOwnerById(eq("joe"))).thenReturn(owner);
         Consumer hypervisor = new Consumer();
+        hypervisor.ensureUUID();
         hypervisor.setName("hypervisor_name");
         hypervisor.setOwner(owner);
         String hypervisorId = "uuid_999";
@@ -235,6 +241,7 @@ public class HypervisorUpdateJobTest {
         when(ownerCurator.findOwnerById(eq("joe"))).thenReturn(owner);
         when(ownerCurator.getByKey(eq("joe"))).thenReturn(owner);
         Consumer hypervisor = new Consumer();
+        hypervisor.ensureUUID();
         hypervisor.setName("hypervisor_name");
         hypervisor.setOwner(owner);
         String hypervisorId = "uuid_999";
@@ -259,6 +266,7 @@ public class HypervisorUpdateJobTest {
         when(ownerCurator.getByKey(eq("joe"))).thenReturn(owner);
         when(ownerCurator.findOwnerById(eq("joe"))).thenReturn(owner);
         Consumer hypervisor = new Consumer();
+        hypervisor.ensureUUID();
         hypervisor.setName("hyper-name");
         hypervisor.setOwner(owner);
         hypervisor.setFact(Consumer.Facts.SYSTEM_UUID, "myUuid");

@@ -293,6 +293,13 @@ public class CandlepinModule extends AbstractModule {
         bind(JsonProvider.class);
         miscConfigurations();
 
+        // Async Jobs
+        bind(RefreshPoolsJob.class);
+        bind(EntitlerJob.class);
+        requestStaticInjection(EntitlerJob.class);
+        bind(HypervisorUpdateJob.class);
+        bind(HypervisorHeartbeatUpdateJob.class);
+
         // UeberCerts
         bind(UeberCertificateGenerator.class);
 

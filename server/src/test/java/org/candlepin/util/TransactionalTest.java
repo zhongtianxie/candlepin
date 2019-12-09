@@ -32,7 +32,7 @@ public class TransactionalTest  {
     /**
      * Test class that lets us control transaction state for testing various scenarios
      */
-    private static class TestTransaction implements EntityTransaction {
+    public static class TestTransaction implements EntityTransaction {
 
         private boolean active;
         private boolean rollbackOnly;
@@ -99,7 +99,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testActionAssignmentOnlyOnce() {
+    public void testActionAssignmentOnlyOnce() throws Exception {
         Transactional transactional = this.buildTransactional();
 
         transactional.wrap(args -> "action");
@@ -108,14 +108,14 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testSetCommitListener() {
+    public void testSetCommitListener() throws Exception {
         Transactional transactional = this.buildTransactional();
 
         transactional.onCommit(status -> { });
     }
 
     @Test
-    public void testSetMultipleCommitListeners() {
+    public void testSetMultipleCommitListeners() throws Exception {
         Transactional transactional = this.buildTransactional();
 
         transactional.onCommit(status -> { });
@@ -123,7 +123,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testSetSameCommitListenerRepeatedly() {
+    public void testSetSameCommitListenerRepeatedly() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = status -> { };
 
@@ -132,14 +132,14 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testSetRollbackListener() {
+    public void testSetRollbackListener() throws Exception {
         Transactional transactional = this.buildTransactional();
 
         transactional.onRollback(status -> { });
     }
 
     @Test
-    public void testSetMultipleRollbackListeners() {
+    public void testSetMultipleRollbackListeners() throws Exception {
         Transactional transactional = this.buildTransactional();
 
         transactional.onRollback(status -> { });
@@ -147,7 +147,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testSetSameRollbackListenerRepeatedly() {
+    public void testSetSameRollbackListenerRepeatedly() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = status -> { };
 
@@ -156,14 +156,14 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testSetOnCompleteListener() {
+    public void testSetOnCompleteListener() throws Exception {
         Transactional transactional = this.buildTransactional();
 
         transactional.onComplete(status -> { });
     }
 
     @Test
-    public void testSetMultipleOnCompleteListeners() {
+    public void testSetMultipleOnCompleteListeners() throws Exception {
         Transactional transactional = this.buildTransactional();
 
         transactional.onComplete(status -> { });
@@ -171,7 +171,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testSetSameOnCompleteListenerRepeatedly() {
+    public void testSetSameOnCompleteListenerRepeatedly() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = status -> { };
 
@@ -180,14 +180,14 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testCannotExecuteWithoutAction() {
+    public void testCannotExecuteWithoutAction() throws Exception {
         Transactional transactional = this.buildTransactional();
 
         assertThrows(IllegalStateException.class, () -> transactional.execute());
     }
 
     @Test
-    public void testExecuteRunsActionWithNoArgs() {
+    public void testExecuteRunsActionWithNoArgs() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Action action = mock(Transactional.Action.class);
         Object expected = "output";
@@ -202,7 +202,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecuteRunsActionWithArgs() {
+    public void testExecuteRunsActionWithArgs() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Action action = mock(Transactional.Action.class);
         Object expected = "output";
@@ -217,7 +217,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecutionFailsOnActiveTransaction() {
+    public void testExecutionFailsOnActiveTransaction() throws Exception {
         Transactional transactional = this.buildTransactional()
             .wrap(args -> "action");
 
@@ -227,7 +227,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecutionCanUseActiveTransactions() {
+    public void testExecutionCanUseActiveTransactions() throws Exception {
         Transactional transactional = this.buildTransactional()
             .wrap(args -> "action")
             .allowExistingTransactions();
@@ -243,7 +243,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testRollbackOnUncaughtActionException() {
+    public void testRollbackOnUncaughtActionException() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Action action = mock(Transactional.Action.class);
 
@@ -257,7 +257,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecuteRunsCommitListenersAfterExecution() {
+    public void testExecuteRunsCommitListenersAfterExecution() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = mock(Transactional.Listener.class);
 
@@ -269,7 +269,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecuteRunsMultipleCommitListenersAfterExecution() {
+    public void testExecuteRunsMultipleCommitListenersAfterExecution() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener1 = mock(Transactional.Listener.class);
         Transactional.Listener listener2 = mock(Transactional.Listener.class);
@@ -284,7 +284,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecuteRunsIdenticalCommitListenersAfterExecution() {
+    public void testExecuteRunsIdenticalCommitListenersAfterExecution() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = mock(Transactional.Listener.class);
 
@@ -297,7 +297,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecuteRunsRollbackListenersAfterExecution() {
+    public void testExecuteRunsRollbackListenersAfterExecution() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = mock(Transactional.Listener.class);
 
@@ -309,7 +309,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecuteRunsMultipleRollbackListenersAfterExecution() {
+    public void testExecuteRunsMultipleRollbackListenersAfterExecution() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener1 = mock(Transactional.Listener.class);
         Transactional.Listener listener2 = mock(Transactional.Listener.class);
@@ -324,7 +324,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExecuteRunsIdenticalRollbackListenersAfterExecution() {
+    public void testExecuteRunsIdenticalRollbackListenersAfterExecution() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = mock(Transactional.Listener.class);
 
@@ -337,7 +337,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExceptionWhenTransactionCommittedDuringExclusiveExecution() {
+    public void testExceptionWhenTransactionCommittedDuringExclusiveExecution() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = mock(Transactional.Listener.class);
 
@@ -347,7 +347,7 @@ public class TransactionalTest  {
     }
 
     @Test
-    public void testExceptionWhenTransactionRolledBackDuringExclusiveExecution() {
+    public void testExceptionWhenTransactionRolledBackDuringExclusiveExecution() throws Exception {
         Transactional transactional = this.buildTransactional();
         Transactional.Listener listener = mock(Transactional.Listener.class);
 

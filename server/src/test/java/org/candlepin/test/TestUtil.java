@@ -14,7 +14,9 @@
  */
 package org.candlepin.test;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.any;
 
 import org.candlepin.auth.Access;
 import org.candlepin.auth.UserPrincipal;
@@ -27,6 +29,7 @@ import org.candlepin.dto.api.v1.GuestIdDTO;
 import org.candlepin.dto.api.v1.OwnerDTO;
 import org.candlepin.dto.api.v1.ProductDTO;
 import org.candlepin.dto.api.v1.ProductDTO.ProductContentDTO;
+import org.candlepin.model.AbstractHibernateCurator;
 import org.candlepin.model.Branding;
 import org.candlepin.model.CertificateSerial;
 import org.candlepin.model.Consumer;
@@ -48,6 +51,7 @@ import org.candlepin.model.dto.ProductData;
 import org.candlepin.model.dto.ProductContentData;
 import org.candlepin.model.dto.Subscription;
 import org.candlepin.util.Util;
+import org.candlepin.util.Transactional;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -55,6 +59,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.io.FileUtils;
+
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.stubbing.Answer;
 
 import java.io.File;
 import java.io.IOException;
@@ -71,6 +78,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+
+import javax.persistence.EntityManager;
+import javax.persistence.EntityTransaction;
 
 
 
@@ -99,8 +109,9 @@ public class TestUtil {
     }
 
     public static Consumer createConsumer(ConsumerType type, Owner owner) {
-        return new Consumer("TestConsumer" + randomInt(), "User", owner, type);
+        return new Consumer("TestConsumer" + randomInt(), "User", owner, type).setUuid(Util.generateUUID());
     }
+
     public static ConsumerDTO createConsumerDTO(ConsumerTypeDTO type, OwnerDTO owner) {
         return createConsumerDTO("TestConsumer" + randomInt(), "User", owner, type);
     }
@@ -154,8 +165,7 @@ public class TestUtil {
             "User",
             owner,
             createConsumerType()
-        );
-
+        ).setUuid(Util.generateUUID());
         consumer.setCreated(new Date());
         consumer.setFact("foo", "bar");
         consumer.setFact("foo1", "bar1");
@@ -541,7 +551,6 @@ public class TestUtil {
     public static IdentityCertificate createIdCert(Date expiration) {
         IdentityCertificate idCert = new IdentityCertificate();
         CertificateSerial serial = new CertificateSerial(expiration);
-        serial.setId(Long.valueOf(new Random().nextInt(1000000)));
 
         // totally arbitrary
         idCert.setId(String.valueOf(new Random().nextInt(1000000)));
@@ -586,6 +595,17 @@ public class TestUtil {
             .setAttributes(Collections.<String, String>emptyMap());
 
         return dto;
+    }
+
+    public static Branding createProductBranding(Product product) {
+        Branding productBranding = new Branding();
+        String suffix = randomString();
+        productBranding.setId("test-id-" + suffix);
+        productBranding.setProduct(product);
+        productBranding.setName("test-name-" + suffix);
+        productBranding.setType("test-type-" + suffix);
+        productBranding.setProductId("test-product-id-" + suffix);
+        return productBranding;
     }
 
     public void addPermissionToUser(User u, Access role, Owner o) {
@@ -637,12 +657,6 @@ public class TestUtil {
         pool.setUpstreamConsumerId(sub.getUpstreamConsumerId());
         pool.setUpstreamEntitlementId(sub.getUpstreamEntitlementId());
 
-        for (Branding branding : sub.getBranding()) {
-            pool.getBranding().add(
-                new Branding(branding.getProductId(), branding.getType(), branding.getName())
-            );
-        }
-
         return pool;
     }
 
@@ -666,10 +680,6 @@ public class TestUtil {
 
         // Copy sub-product data if there is any:
         p.setDerivedProduct(pool.getDerivedProduct());
-
-        for (Branding b : pool.getBranding()) {
-            p.getBranding().add(new Branding(b.getProductId(), b.getType(), b.getName()));
-        }
 
         return p;
     }
@@ -759,7 +769,6 @@ public class TestUtil {
         assertEquals(pool1.getEntitlements(), pool2.getEntitlements());
         assertEquals(pool1.getConsumed(), pool2.getConsumed());
         assertEquals(pool1.getExported(), pool2.getExported());
-        assertEquals(pool1.getBranding(), pool2.getBranding());
         assertEquals(pool1.getCalculatedAttributes(), pool2.getCalculatedAttributes());
         assertEquals(pool1.isMarkedForDelete(), pool2.isMarkedForDelete());
         assertEquals(pool1.getUpstreamConsumerId(), pool2.getUpstreamConsumerId());
@@ -768,5 +777,62 @@ public class TestUtil {
         assertEquals(pool1.getCertificate(), pool2.getCertificate());
         assertEquals(pool1.getCdn(), pool2.getCdn());
 
+    }
+
+    public static void mockTransactionalFunctionality(EntityManager mockEntityManager,
+        AbstractHibernateCurator mockCurator) {
+
+        EntityTransaction transaction = new EntityTransaction() {
+            private boolean active;
+            private boolean rollbackOnly;
+
+            @Override
+            public void begin() {
+                this.active = true;
+            }
+
+            @Override
+            public void commit() {
+                if (!this.active) {
+                    throw new IllegalStateException();
+                }
+
+                this.active = false;
+            }
+
+            @Override
+            public boolean getRollbackOnly() {
+                return this.rollbackOnly;
+            }
+
+            @Override
+            public boolean isActive() {
+                return this.active;
+            }
+
+            @Override
+            public void rollback() {
+                if (!this.active) {
+                    throw new IllegalStateException();
+                }
+
+                this.active = false;
+            }
+
+            @Override
+            public void setRollbackOnly() {
+                this.rollbackOnly = true;
+            }
+        };
+
+        doReturn(transaction).when(mockEntityManager).getTransaction();
+
+        doAnswer(new Answer<Transactional>() {
+            @Override
+            public Transactional answer(InvocationOnMock iom) throws Throwable {
+                Transactional.Action action = (Transactional.Action) iom.getArguments()[0];
+                return new Transactional(mockEntityManager).wrap(action);
+            }
+        }).when(mockCurator).transactional(any());
     }
 }

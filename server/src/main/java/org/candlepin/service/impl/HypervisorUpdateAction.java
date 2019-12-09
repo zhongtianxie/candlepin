@@ -14,6 +14,9 @@
  */
 package org.candlepin.service.impl;
 
+import org.candlepin.async.tasks.HypervisorUpdateJob;
+import org.candlepin.common.config.Configuration;
+import org.candlepin.config.ConfigProperties;
 import org.candlepin.dto.ModelTranslator;
 import org.candlepin.dto.api.v1.HypervisorConsumerDTO;
 import org.candlepin.dto.api.v1.HypervisorUpdateResultDTO;
@@ -34,6 +37,7 @@ import com.google.inject.Inject;
 import com.google.inject.persist.Transactional;
 
 import org.apache.commons.lang.StringUtils;
+import org.candlepin.util.Util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,6 +63,7 @@ public class HypervisorUpdateAction {
     private ConsumerType hypervisorType;
     private SubscriptionServiceAdapter subAdapter;
     private ModelTranslator translator;
+    private Configuration config;
 
     public static final String CREATE = "create";
     protected static String prefix = "hypervisor_update_";
@@ -66,25 +71,28 @@ public class HypervisorUpdateAction {
     @Inject
     public HypervisorUpdateAction(ConsumerCurator consumerCurator,
         ConsumerTypeCurator consumerTypeCurator, ConsumerResource consumerResource,
-        SubscriptionServiceAdapter subAdapter, ModelTranslator translator) {
+        SubscriptionServiceAdapter subAdapter, ModelTranslator translator,
+        Configuration config) {
+
         this.consumerCurator = consumerCurator;
         this.consumerResource = consumerResource;
         this.subAdapter = subAdapter;
         this.translator = translator;
         this.hypervisorType = consumerTypeCurator.getByLabel(ConsumerTypeEnum.HYPERVISOR.getLabel(), true);
+        this.config = config;
     }
 
     @Transactional
     public Result update(
         final Owner owner,
-        final List<Consumer> hypervisors,
+        final HypervisorUpdateJob.HypervisorList hypervisors,
         final Boolean create,
         final String principal,
         final String jobReporterId) {
 
         final String ownerKey = owner.getKey();
 
-        log.debug("Hypervisor consumers for create/update: {}", hypervisors.size());
+        log.debug("Hypervisor consumers for create/update: {}", hypervisors.getHypervisors().size());
         log.debug("Updating hypervisor consumers for org {}", ownerKey);
 
         Set<String> hosts = new HashSet<>();
@@ -95,13 +103,15 @@ public class HypervisorUpdateAction {
 
         // Maps virt hypervisor ID to registered consumer for that hypervisor, should one exist:
         VirtConsumerMap hypervisorKnownConsumersMap = consumerCurator
-            .getHostConsumersMap(owner, hypervisors);
+            .getHostConsumersMap(owner, hypervisors.getHypervisors());
         HypervisorUpdateResultDTO result = new HypervisorUpdateResultDTO();
         Map<String, Consumer> systemUuidKnownConsumersMap = new HashMap<>();
-        for (Consumer consumer : hypervisorKnownConsumersMap.getConsumers()) {
-            if (consumer.hasFact(Consumer.Facts.SYSTEM_UUID)) {
-                systemUuidKnownConsumersMap.put(
-                    consumer.getFact(Consumer.Facts.SYSTEM_UUID).toLowerCase(), consumer);
+        if (config.getBoolean(ConfigProperties.USE_SYSTEM_UUID_FOR_MATCHING)) {
+            for (Consumer consumer : hypervisorKnownConsumersMap.getConsumers()) {
+                if (consumer.hasFact(Consumer.Facts.SYSTEM_UUID)) {
+                    systemUuidKnownConsumersMap.put(
+                        consumer.getFact(Consumer.Facts.SYSTEM_UUID).toLowerCase(), consumer);
+                }
             }
         }
 
@@ -110,16 +120,7 @@ public class HypervisorUpdateAction {
             Consumer incoming = incomingHosts.get(hypervisorId);
             Consumer knownHost = hypervisorKnownConsumersMap.get(hypervisorId);
             // HypervisorId might be different in candlepin
-            if (knownHost == null && incoming.hasFact(Consumer.Facts.SYSTEM_UUID) &&
-                systemUuidKnownConsumersMap.get(
-                incoming.getFact(Consumer.Facts.SYSTEM_UUID).toLowerCase()) != null) {
-                knownHost = systemUuidKnownConsumersMap.get(incoming.getFact(
-                    Consumer.Facts.SYSTEM_UUID).toLowerCase());
-                if (knownHost != null) {
-                    log.debug("Found a known host by system uuid");
-                }
-            }
-
+            knownHost = reconcileByUuid(knownHost, incoming, systemUuidKnownConsumersMap);
             Consumer reportedOnConsumer = null;
 
             if (knownHost == null) {
@@ -147,12 +148,13 @@ public class HypervisorUpdateAction {
                 }
             }
             else {
-                boolean hypervisorIdUpdated = false;
-                if (knownHost.getHypervisorId() != null && !hypervisorId.equalsIgnoreCase(knownHost
-                    .getHypervisorId().getHypervisorId())) {
-                    hypervisorIdUpdated = true;
-                    log.debug("Changing hypervisor id to [" + hypervisorId + "]");
-                    knownHost.getHypervisorId().setHypervisorId(hypervisorId);
+                boolean hypervisorIdUpdated = updateHypervisorId(knownHost, owner, jobReporterId,
+                    hypervisorId);
+
+                boolean nameUpdated = knownHost.getName() == null ||
+                    !knownHost.getName().equals(incoming.getName());
+                if (nameUpdated) {
+                    knownHost.setName(incoming.getName());
                 }
 
                 reportedOnConsumer = knownHost;
@@ -176,7 +178,7 @@ public class HypervisorUpdateAction {
                 final boolean factsUpdated = consumerResource.checkForFactsUpdate(knownHost, incoming);
 
                 if (factsUpdated || guestMigration.isMigrationPending() || typeUpdated ||
-                    hypervisorIdUpdated) {
+                    hypervisorIdUpdated || nameUpdated) {
                     knownHost.setLastCheckin(new Date());
                     guestMigration.migrate(false);
                     result.addUpdated(this.translator.translate(knownHost, HypervisorConsumerDTO.class));
@@ -201,12 +203,48 @@ public class HypervisorUpdateAction {
         return new Result(result, hypervisorKnownConsumersMap);
     }
 
-    private void parseHypervisorList(List<Consumer> hypervisorList, Set<String> hosts,
+    private Consumer reconcileByUuid(Consumer knownHost, Consumer incoming,
+        Map<String, Consumer> systemUuidKnownConsumersMap) {
+        if (knownHost == null && config.getBoolean(ConfigProperties.USE_SYSTEM_UUID_FOR_MATCHING) &&
+            incoming.hasFact(Consumer.Facts.SYSTEM_UUID) &&
+            systemUuidKnownConsumersMap.get(
+            incoming.getFact(Consumer.Facts.SYSTEM_UUID).toLowerCase()) != null) {
+
+            knownHost = systemUuidKnownConsumersMap.get(incoming.getFact(
+                    Consumer.Facts.SYSTEM_UUID).toLowerCase());
+            if (knownHost != null) {
+                log.debug("Found a known host by system uuid");
+            }
+        }
+        return knownHost;
+    }
+    private boolean updateHypervisorId(Consumer consumer, Owner owner, String reporterId,
+        String hypervisorId) {
+
+        boolean hypervisorIdUpdated = true;
+
+        if (consumer.getHypervisorId() == null) {
+            log.debug("Existing hypervisor id is null, changing hypervisor id to [" + hypervisorId + "]");
+            consumer.setHypervisorId(new HypervisorId(consumer, owner, hypervisorId,
+                reporterId));
+        }
+        else if (!hypervisorId.equalsIgnoreCase(consumer.getHypervisorId().getHypervisorId())) {
+            log.debug("New hypervisor id is different, Changing hypervisor id to [" + hypervisorId + "]");
+            consumer.getHypervisorId().setHypervisorId(hypervisorId);
+        }
+        else {
+            hypervisorIdUpdated = false;
+        }
+        return hypervisorIdUpdated;
+    }
+
+    private void parseHypervisorList(HypervisorUpdateJob.HypervisorList hypervisorList, Set<String> hosts,
         Set<String> guests, Map<String, Consumer> incomingHosts) {
         int emptyGuestIdCount = 0;
         int emptyHypervisorIdCount = 0;
 
-        for (Iterator<Consumer> hypervisors = hypervisorList.iterator(); hypervisors.hasNext();) {
+        List<Consumer> l = hypervisorList.getHypervisors();
+        for (Iterator<Consumer> hypervisors = l.iterator(); hypervisors.hasNext();) {
             Consumer hypervisor = hypervisors.next();
 
             HypervisorId idWrapper = hypervisor.getHypervisorId();
@@ -262,7 +300,7 @@ public class HypervisorUpdateAction {
      */
     private Consumer createConsumerForHypervisorId(String incHypervisorId, String reporterId,
         Owner owner, String principal, Consumer incoming) {
-        Consumer consumer = new Consumer();
+        Consumer consumer = new Consumer().setUuid(Util.generateUUID());
         if (incoming.getName() != null) {
             consumer.setName(incoming.getName());
         }
@@ -282,9 +320,11 @@ public class HypervisorUpdateAction {
         else {
             consumer.setServiceLevel("");
         }
+
         if (principal != null) {
             consumer.setUsername(principal);
         }
+
         consumer.setEntitlementCount(0L);
         // TODO: Refactor this to not call resource methods directly
         consumerResource.sanitizeConsumerFacts(consumer);
